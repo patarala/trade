@@ -5,6 +5,10 @@ classify its price history. The simulator continues to own users, experiments an
 trading results. Regimex owns analysis jobs, saved-model inference and reports.
 The connection is disabled by default and adds no database migration.
 
+To start both applications and a private PostgreSQL cluster with one command, see
+the [optional local runner](regimex-local.md). The instructions below connect an
+ordinary simulator installation to an already running Regimex service.
+
 ## Enable the connection
 
 In the Regimex administrator interface, open **Connections**, create a connection
@@ -81,6 +85,18 @@ retried with **Повторить анализ**; repeating that retry also reus
 An unavailable analysis service leaves the simulator's own results usable. After a
 polling error, **Проверить состояние** resumes checking.
 
+The **Анализ** selector lists saved analyses of the selected run, including their
+model, status and time. **Новее** and **Старее** move through bounded history pages;
+**Обновить историю** refreshes the list. Selecting an older analysis keeps its own
+result and report available without submitting another job.
+
+**Ссылка на анализ** opens a stable address for that analysis and selected
+instrument. It restores the same result after a reload or sign-in and does not
+contain credentials. The recipient still needs to own the run. An unavailable
+analysis, invalid link or missing instrument produces an explicit error rather
+than silently displaying a different result. This is analysis history for one
+selected run; it does not add a simulator run-history screen.
+
 Only complete runs of at most 4096 steps can be analyzed. Running, stopped, failed
 and longer runs receive an explanation; they are never silently shortened. The
 adapter currently supports simulator engine versions 2 and 3. A run must retain
@@ -124,6 +140,56 @@ This integration establishes data and access compatibility. Prediction quality o
 this simulator requires separate evaluation; generating a report does not establish
 accuracy or turn model predictions into reference labels.
 
+## Connection diagnostics and capacity
+
+With the backend environment configured, run:
+
+```sh
+python -m backend.scripts.regimex_doctor
+python -m backend.scripts.regimex_doctor --json
+```
+
+The command reads the same Regimex settings as the API; it does not require a
+simulator database connection or JWT configuration. It checks the API, TLS when
+enabled, the credential's source and capabilities, database readiness and active
+model configuration. It uses a shared ten-second deadline and bounded responses.
+The key is sent only to the configured connection endpoint after the API check;
+health requests contain no credentials. No observations or analysis jobs are created.
+
+Exit status is `0` for passed or explicitly disabled configuration and `1` for a
+failed check. Worker execution is reported as untested; use Regimex's native
+service diagnostics for worker health. A rejected key cannot be distinguished as
+invalid, expired, revoked or attached to a paused connection from its `401` response.
+Inspect its connection in Regimex rather than guessing the cause. Older Regimex
+versions without `/api/v1/connection` receive an explicit diagnostic failure.
+
+`REGIMEX_MAX_CONCURRENT_REQUESTS` defaults to `4` and accepts `1` through `16`.
+The bound applies to all Regimex routes, including export downloads, before
+database dependencies, export aggregation or shared synchronous worker threads.
+Excess requests fail immediately with `503`, code `analysis_busy`, and
+`Retry-After: 2`. Ordinary simulator routes bypass this budget. This is a
+per-process capacity bound: multiple API processes each have their own allowance.
+Regimex's separate connection and subject rate limits still apply upstream.
+
+Adapter transport diagnostics use fixed error categories and durations. They do
+not log credentials, request/response bodies, user identities or destination URLs.
+The optional connection's availability does not change the simulator's `/health`.
+
+## Release verification
+
+The **Regimex integration** GitHub Actions workflow is an explicit manual check.
+Open **Actions**, select that workflow, and choose **Run workflow** for the branch
+being released. It checks out a reviewed Regimex commit, installs compatible locked
+dependencies, starts a disposable PostgreSQL service and exercises real HTTP
+export, saved-model inference, report download, request replay and access isolation.
+Updating the supported Regimex revision is a deliberate workflow change.
+
+The workflow creates a small artificial baseline bundle solely for protocol checks.
+It does not download production models, publish artifacts, evaluate classification
+accuracy or retrain the installed model. The ordinary push workflow stays separate
+and inexpensive. For acceptance with a supplied model bundle, run the optional
+integration command below with that bundle before release.
+
 ## API
 
 All routes require the simulator user's bearer token and an explicit positive
@@ -132,11 +198,18 @@ All routes require the simulator user's bearer token and an explicit positive
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/regimex` | Configuration availability, eligibility and latest analysis |
+| GET | `/regimex/run` | Resolve one owned run from an analysis link |
 | GET | `/regimex/export` | Download a completed schema-2.1 export |
+| GET | `/regimex/analyses` | Saved analyses of this run, with `limit` (1–20) and `offset` (0–10000) |
 | POST | `/regimex/analyses` | Submit `{}` or retry with `{"retry_of":"ANALYSIS_UUID"}` |
 | GET | `/regimex/analyses/{analysis_id}` | Read the verified job state |
 | GET | `/regimex/analyses/{analysis_id}/result` | Download the verified result JSON |
 | GET | `/regimex/analyses/{analysis_id}/report` | Download the HTML report |
+
+History returns `items`, `limit`, `offset` and `has_more`. Analysis views include
+`model_version_id` and `created_at`. Every page retains the same owner/run/source
+and snapshot digest checks as individual downloads; an invalid upstream entry
+rejects the page rather than silently omitting that entry.
 
 Export download also works without a configured Regimex URL or key. Configure
 `REGIMEX_SOURCE_ID` to match the eventual receiving connection before exporting.

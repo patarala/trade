@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+var
+release
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/dist

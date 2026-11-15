@@ -1,0 +1,36 @@
+{
+  "name": "BTC/USD: selling pressure",
+  "duration_steps": 512,
+  "seed": 42,
+  "background_initial_quote_balance": 10000000,
+  "background_min_order_volume": 0.01,
+  "background_max_order_volume": 0.01,
+  "test_initial_quote_balance": 10000000,
+  "test_min_order_volume": 0.01,
+  "test_max_order_volume": 0.01,
+  "instrument_configs": [
+    {
+      "initial_price": 60000,
+      "background_initial_base_balance": 100,
+      "test_initial_base_balance": 100,
+      "symbol": "BTC/USD"
+    }
+  ],
+  "background_profiles": [
+    {
+      "strategy_type": "random",
+      "buy_probability": 0,
+      "sell_probability": 100,
+      "hold_probability": 0,
+      "price_deviation_pct": 0.3,
+      "agent_count": 3
+    }
+  ],
+  "test_strategy": {
+    "strategy_type": "random",
+    "buy_probability": 100,
+    "sell_probability": 0,
+    "hold_probability": 0,
+    "price_deviation_pct": 0
+  }
+}

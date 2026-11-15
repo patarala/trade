@@ -6,13 +6,15 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - '.github/workflows/ci.yml'
+      - 'examples/regimex/**'
+      - '.github/workflows/**'
   pull_request:
     branches: [main]
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - '.github/workflows/ci.yml'
+      - 'examples/regimex/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:

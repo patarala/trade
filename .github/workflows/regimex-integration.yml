@@ -1,0 +1,84 @@
+name: Regimex integration
+
+# A release check, deliberately separate from ordinary push CI.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regimex-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: PostgreSQL and saved-model interoperability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.15-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+        env:
+          POSTGRES_USER: integration_test
+          POSTGRES_PASSWORD: disposable-integration-password
+          POSTGRES_DB: integration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U integration_test -d integration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: sqlite://
+      JWT_SECRET: integration-test-signing-key-32-bytes
+      PASSWORD_PEPPER: integration-test-pepper
+      TRADE_REGIMEX_TEST_DSN: postgresql://integration_test:disposable-integration-password@127.0.0.1:5432/integration_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the reviewed Regimex implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: patarala/regimex
+          ref: 378817a710c0e1c68483720a8c91c7aa781b0194
+          path: var/ci-regimex
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.4'
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.0'
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/requirements.lock
+            var/ci-regimex/uv.lock
+      - name: Install compatible locked dependencies
+        shell: bash
+        run: |
+          uv sync --locked --project var/ci-regimex --extra service --extra ml --extra viz --group service-test
+          uv export --locked --project var/ci-regimex --extra service --extra ml --extra viz --group service-test --no-hashes --no-emit-project --output-file "$RUNNER_TEMP/regimex-constraints.txt"
+          uv pip install --python var/ci-regimex/.venv/bin/python --constraint "$RUNNER_TEMP/regimex-constraints.txt" --requirement backend/requirements.lock
+          uv pip check --python var/ci-regimex/.venv/bin/python
+      - name: Prepare a small saved model for protocol checks
+        shell: bash
+        run: |
+          var/ci-regimex/.venv/bin/python var/ci-regimex/tests/support/container_fixture.py \
+            --template var/ci-regimex/tests/fixtures/experiment-v2.json \
+            --output "$RUNNER_TEMP/regimex-protocol-fixture"
+          printf '%s\n' "TRADE_REGIMEX_TEST_MODEL=$RUNNER_TEMP/regimex-protocol-fixture/bundle" >> "$GITHUB_ENV"
+      - name: Verify the real export, analysis, report and access boundaries
+        shell: bash
+        run: |
+          test -f "$TRADE_REGIMEX_TEST_MODEL/manifest.json"
+          var/ci-regimex/.venv/bin/python -m unittest backend.tests.test_regimex_integration -v
+      - name: Describe the scope of this check
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'Passed the real PostgreSQL and HTTP integration with a saved fixture model.' \
+            'Checks data contracts, persistence, repeated requests and access isolation.' \
+            'This is not a measurement of model accuracy or simulator transfer.' >> "$GITHUB_STEP_SUMMARY"

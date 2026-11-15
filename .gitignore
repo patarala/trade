@@ -7,6 +7,10 @@ venv/
 # Environment
 .env
 
+# Local integration state and generated release assets
+/var/
+/release/
+
 # Frontend
 node_modules/
 dist/

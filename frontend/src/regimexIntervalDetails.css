@@ -1,0 +1,18 @@
+.regimex-interval-details {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.regimex-interval-details h4 { margin: 0 0 14px; font-size: 14px; }
+.regimex-interval-details dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; }
+.regimex-interval-details dt { color: var(--muted); font-size: 12px; }
+.regimex-interval-details dd { margin: 5px 0 0; font-size: 17px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.regimex-detail-count { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.regimex-interval-details p { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 520px) {
+  .regimex-interval-details dl { grid-template-columns: 1fr; gap: 12px; }
+}

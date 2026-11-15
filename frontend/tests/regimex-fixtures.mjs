@@ -32,7 +32,13 @@ export function previewPayloads(count = 4, instrumentCount = 2) {
       instrument_id: instrument.instrument_id,
       probabilities: Array.from({ length: count }, () => [1, 0, 0]),
       intervals: [{ instrument_id: instrument.instrument_id, start: 0, stop: count,
-        direction: null, status: "no_trades" }],
+        direction: null, status: "no_trades", statistics: {
+          price_change_percent: count >= 2 ? 0 : null, first_price_step: 0, last_price_step: count - 1,
+          return_std: count >= 3 ? 0 : null, return_count: count - 1,
+          trade_count: 0, trade_volume: 0, trade_active_fraction: 0,
+          price_coverage: 1, trade_count_coverage: 1, trade_volume_coverage: 1,
+          longest_no_trade_run: count,
+        } }],
     })),
   };
   return { result, input };

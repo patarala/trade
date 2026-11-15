@@ -26,10 +26,10 @@ test("price centers and interval boundaries share the original step grid", () =>
   assert.deepEqual(chart.stepTicks(range, 400), [10, 11, 12, 13]);
 });
 
-test("missing prices split the line while observed zero remains a point", () => {
-  const data = instrument([0, 2, null, 3, 1]);
+test("missing prices split the line while available prices remain points", () => {
+  const data = instrument([1, 2, null, 3, 1]);
   const result = chart.priceChart(data, chart.stepRange(data.steps), 500, 160);
-  assert.equal(result.points[0].price, 0);
+  assert.equal(result.points[0].price, 1);
   assert.notEqual(result.points[0].y, null);
   assert.equal(result.points[2].y, null);
   assert.equal(result.paths.observed.split("M").length - 1, 2);
@@ -55,7 +55,7 @@ test("carried prices remain available and have a distinct connected path", () =>
 });
 
 test("one point and constant prices are finite and centered", () => {
-  for (const prices of [[0], [12], [12, 12, 12]]) {
+  for (const prices of [[12], [12, 12, 12]]) {
     const data = instrument(prices);
     const result = chart.priceChart(data, chart.stepRange(data.steps), 300, 160);
     assert.ok(result.points.every((point) => point.y === 80 && Number.isFinite(point.x)));
@@ -93,10 +93,74 @@ test("availability takes precedence over direction without inferring sideways", 
 });
 
 test("small changes in a large price remain distinct in hover values and axis labels", () => {
-  for (const prices of [[100000.01, 100000.02], [10000000.01, 10000000.02], [0.00000001, 0.00000002], [1, 1 + Number.EPSILON]]) {
+  for (const prices of [[100000.01, 100000.02], [10000000.01, 10000000.02], [0.00000001, 0.00000002], [1, 1 + Number.EPSILON], [9007199254740990, 9007199254740991]]) {
     assert.notEqual(chart.priceDetail(prices[0]), chart.priceDetail(prices[1]));
     const data = instrument(prices);
     const result = chart.priceChart(data, chart.stepRange(data.steps), 300, 160);
     assert.equal(new Set(result.ticks.map((tick) => tick.label)).size, result.ticks.length);
+  }
+});
+
+test("percentage baseline uses the first available whole-run price and remains fixed on focus", () => {
+  const data = instrument([null, 100, 110, null, 120], ["unknown", "carried", "observed", "unknown", "observed"], 10);
+  const full = chart.priceChart(data, chart.stepRange(data.steps), 500, 160, "change");
+  const focused = chart.priceChart(data, { start: 12, stop: 15 }, 300, 160, "change");
+  assert.deepEqual(full.baseline, { price: 100, step: 11, state: "carried" });
+  assert.deepEqual(focused.baseline, full.baseline);
+  assert.deepEqual(full.points.map((point) => point.value), [null, 0, 10, null, 20]);
+  assert.deepEqual(focused.points.map((point) => point.value), [10, null, 20]);
+  assert.deepEqual(focused.points.map((point) => point.step), [12, 13, 14]);
+  assert.equal(focused.paths.observed.split("M").length - 1, 2);
+  assert.equal(focused.paths.observed.includes("L"), false);
+});
+
+test("percentage charts share a domain so different amplitudes remain comparable", () => {
+  const data = [instrument([100, 101]), instrument([200, 300])];
+  const result = chart.alignedCharts(data, { start: 0, stop: 2 }, 600, 160, "change");
+  const [small, large] = result.series.map((series) => series.chart);
+  assert.deepEqual(small.ticks, large.ticks);
+  assert.deepEqual(small.ticks.map((tick) => tick.value), [0, 25, 50]);
+  assert.equal(small.points[0].y, large.points[0].y);
+  assert.ok(small.points[1].y > large.points[1].y);
+  assert.deepEqual(small.points.map((point) => point.x), large.points.map((point) => point.x));
+  const same = chart.alignedCharts([instrument([10, 11]), instrument([10000, 11000])],
+    { start: 0, stop: 2 }, 600, 160, "change");
+  assert.deepEqual(same.series[0].chart.points.map((point) => point.y), same.series[1].chart.points.map((point) => point.y));
+});
+
+test("absolute charts reserve a common left margin while retaining individual price scales", () => {
+  const result = chart.alignedCharts([instrument([1, 2]), instrument([100000.01, 100000.02])],
+    { start: 0, stop: 2 }, 600, 160, "price");
+  const [first, second] = result.series.map((series) => series.chart);
+  assert.ok(result.left >= 64);
+  assert.equal(result.plotWidth + result.left + 12, 600);
+  assert.deepEqual(first.points.map((point) => point.x), second.points.map((point) => point.x));
+  assert.notDeepEqual(first.ticks.map((tick) => tick.value), second.ticks.map((tick) => tick.value));
+});
+
+test("empty comparison data does not invent a baseline, line, or ticks", () => {
+  const data = [instrument([null, null]), instrument([null, null])];
+  const result = chart.alignedCharts(data, { start: 0, stop: 2 }, 300, 160, "change");
+  for (const { chart: item } of result.series) {
+    assert.equal(item.baseline, null);
+    assert.equal(item.unavailableChange, false);
+    assert.deepEqual(item.paths, { observed: "", carried: "" });
+    assert.deepEqual(item.ticks, []);
+    assert.ok(item.points.every((point) => point.value === null && point.y === null));
+  }
+  const mixed = chart.alignedCharts([data[0], instrument([1, 2])], { start: 0, stop: 2 }, 300, 160, "change");
+  assert.deepEqual(mixed.series[0].chart.ticks, []);
+  assert.ok(mixed.series[1].chart.ticks.length > 0);
+});
+
+test("unrepresentable percentage values remain explicit gaps without nonfinite geometry", () => {
+  for (const prices of [[0, 1], [Number.MIN_VALUE, Number.MAX_VALUE]]) {
+    const data = instrument(prices);
+    const result = chart.priceChart(data, chart.stepRange(data.steps), 300, 160, "change");
+    assert.equal(result.unavailableChange, true);
+    assert.equal(result.points[1].value, null);
+    assert.equal(result.points[1].y, null);
+    assert.ok(result.ticks.every((tick) => Number.isFinite(tick.value) && Number.isFinite(tick.y)));
+    assert.doesNotMatch(result.paths.observed, /NaN|Infinity/);
   }
 });

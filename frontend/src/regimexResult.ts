@@ -1,25 +1,73 @@
 /** A checked projection of the owned export and its saved classification. */
 export type Direction = "sideways" | "growth" | "decline";
 export type PriceState = "observed" | "carried" | "no_execution" | "unknown";
+export type QuoteState = "observed" | "empty" | "unknown";
 export type IntervalStatus = "observed" | "no_trades" | "insufficient_data";
+export type IntervalStats = {
+  priceChangePercent: number | null;
+  firstPriceStep: number | null;
+  lastPriceStep: number | null;
+  tradeCount: number | null;
+  inactiveStepShare: number | null;
+  inactiveSteps: number;
+  activityObservedSteps: number;
+  stepCount: number;
+};
 export type PreviewInterval = {
   start: number;
   stop: number;
   direction: Direction | null;
   status: IntervalStatus;
+  stats: IntervalStats;
+};
+export type PreviewObservation = {
+  step: number;
+  lastPrice: number | null;
+  priceState: PriceState;
+  tradeCount: number | null;
+  tradeVolume: number | null;
+  buyOrderCount: number | null;
+  buyOrderVolume: number | null;
+  sellOrderCount: number | null;
+  sellOrderVolume: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  bidState: QuoteState;
+  askState: QuoteState;
+};
+export type InstrumentUnits = {
+  priceUnit: "quote_asset_per_base_asset";
+  volumeUnit: "base_asset";
+  priceDecimalPlaces: number;
+  volumeDecimalPlaces: number;
 };
 export type PreviewInstrument = {
   id: string;
   baseAsset: string;
   quoteAsset: string;
+  initialPrice: number;
+  units: InstrumentUnits;
   steps: number[];
   prices: (number | null)[];
   priceStates: PriceState[];
+  observations: PreviewObservation[];
   intervals: PreviewInterval[];
 };
 export type AnalysisPreview = {
   analysisId: string;
   modelVersion: string;
+  modelBundleSha256: string;
+  inferencePolicySha256: string;
+  snapshotId: string;
+  snapshotSha256: string;
+  source: {
+    sourceId: string;
+    sourceVersion: string;
+    configurationId: string;
+    runId: string;
+    snapshotId: string;
+    stateRevision: string;
+  };
   instruments: PreviewInstrument[];
 };
 
@@ -28,6 +76,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
 const DIRECTIONS = ["sideways", "growth", "decline"];
 const PRICE_STATES = ["observed", "carried", "no_execution", "unknown"];
+const QUOTE_STATES = ["observed", "empty", "unknown"];
 const STATUSES = ["observed", "no_trades", "insufficient_data"];
 
 export class InvalidAnalysisPreview extends Error {
@@ -82,7 +131,9 @@ function sameMetadata(left: unknown, right: unknown, depth = 0): boolean {
     && keys.every((key) => Object.hasOwn(b, key) && sameMetadata(a[key], b[key], depth + 1));
 }
 
-function intervals(value: unknown, instrumentId: string, count: number): PreviewInterval[] {
+type IntervalBounds = Omit<PreviewInterval, "stats">;
+
+function intervals(value: unknown, instrumentId: string, count: number): IntervalBounds[] {
   requireValue(Array.isArray(value) && value.length > 0 && value.length <= count);
   let previous = 0;
   const result = value.map((raw) => {
@@ -109,14 +160,51 @@ function probabilities(value: unknown, count: number): void {
   }
 }
 
-function activity(row: Record<string, unknown>): { count: number | null; volume: number | null } {
+function activity(row: Record<string, unknown>): Pick<PreviewObservation,
+  "tradeCount" | "tradeVolume" | "buyOrderCount" | "buyOrderVolume" | "sellOrderCount" | "sellOrderVolume"> {
   for (const prefix of ["trade", "buy_order", "sell_order"]) {
     const count = row[`${prefix}_count`], volume = row[`${prefix}_volume`];
     if (count !== null) integer(count, 0, 2 ** 31 - 1);
     if (volume !== null) number(volume);
     if (count !== null && volume !== null) requireValue((count === 0) === (volume === 0));
   }
-  return { count: row.trade_count as number | null, volume: row.trade_volume as number | null };
+  return {
+    tradeCount: row.trade_count as number | null, tradeVolume: row.trade_volume as number | null,
+    buyOrderCount: row.buy_order_count as number | null, buyOrderVolume: row.buy_order_volume as number | null,
+    sellOrderCount: row.sell_order_count as number | null, sellOrderVolume: row.sell_order_volume as number | null,
+  };
+}
+
+function quotes(row: Record<string, unknown>): Pick<PreviewObservation, "bestBid" | "bestAsk" | "bidState" | "askState"> {
+  for (const side of ["bid", "ask"]) {
+    const state = row[`${side}_state`], value = row[`best_${side}`];
+    requireValue(QUOTE_STATES.includes(state as string));
+    if (state === "observed") positive(value);
+    else requireValue(value === null);
+  }
+  const bestBid = row.best_bid as number | null, bestAsk = row.best_ask as number | null;
+  requireValue(bestBid === null || bestAsk === null || bestBid <= bestAsk);
+  return { bestBid, bestAsk, bidState: row.bid_state as QuoteState, askState: row.ask_state as QuoteState };
+}
+
+function summarize(rows: PreviewObservation[], interval: IntervalBounds): IntervalStats {
+  const selected = rows.slice(interval.start, interval.stop);
+  const prices = selected.flatMap((row) => row.lastPrice === null ? [] : [{ step: row.step, price: row.lastPrice }]);
+  const first = prices[0], last = prices.at(-1);
+  // Match the report: compare available prices without filling absent endpoints.
+  // A single available price provides no measured change, even if carried.
+  const priceChangePercent = first && last && first.step !== last.step
+    ? 100 * (last.price / first.price - 1) : null;
+  requireValue(priceChangePercent === null || Number.isFinite(priceChangePercent));
+  const known = selected.flatMap((row) => row.tradeCount === null ? [] : [row.tradeCount]);
+  const inactiveSteps = known.filter((count) => count === 0).length;
+  return {
+    priceChangePercent, firstPriceStep: first?.step ?? null, lastPriceStep: last?.step ?? null,
+    // Never label a known-only partial sum as the interval's complete total.
+    tradeCount: known.length === selected.length ? known.reduce((sum, count) => sum + count, 0) : null,
+    inactiveStepShare: known.length ? inactiveSteps / known.length : null,
+    inactiveSteps, activityObservedSteps: known.length, stepCount: selected.length,
+  };
 }
 
 export function createAnalysisPreview(resultValue: unknown, exportValue: unknown, expected: Identity): AnalysisPreview {
@@ -153,19 +241,23 @@ export function createAnalysisPreview(resultValue: unknown, exportValue: unknown
   requireValue(Array.isArray(result.sequences) && result.sequences.length === input.instruments.length);
   const sequences = result.sequences;
   const knownPrices = new Map<string, number | null>();
-  const instruments = input.instruments.map((raw, index): PreviewInstrument => {
+  const instruments = input.instruments.map((raw, index) => {
     const item = object(raw), id = identifier(item.instrument_id);
     const baseAsset = identifier(item.base_asset), quoteAsset = identifier(item.quote_asset);
     requireValue(baseAsset !== quoteAsset && !knownPrices.has(id));
-    knownPrices.set(id, positive(item.initial_price));
+    const initialPrice = positive(item.initial_price);
+    knownPrices.set(id, initialPrice);
     const units = object(item.units);
     requireValue(units.price_unit === "quote_asset_per_base_asset" && units.volume_unit === "base_asset");
-    integer(units.price_decimal_places, 0, 18);
-    integer(units.volume_decimal_places, 0, 18);
+    const priceDecimalPlaces = integer(units.price_decimal_places, 0, 18);
+    const volumeDecimalPlaces = integer(units.volume_decimal_places, 0, 18);
     const sequence = object(sequences[index]);
     requireValue(sequence.instrument_id === id);
     probabilities(sequence.probabilities, count);
-    return { id, baseAsset, quoteAsset, steps: [], prices: [], priceStates: [],
+    return { id, baseAsset, quoteAsset, initialPrice,
+      units: { priceUnit: "quote_asset_per_base_asset", volumeUnit: "base_asset", priceDecimalPlaces, volumeDecimalPlaces } as InstrumentUnits,
+      steps: [] as number[], prices: [] as (number | null)[], priceStates: [] as PriceState[],
+      observations: [] as PreviewObservation[],
       intervals: intervals(sequence.intervals, id, count) };
   });
   requireValue(instruments.every((item) => item.quoteAsset === instruments[0].quoteAsset));
@@ -182,18 +274,34 @@ export function createAnalysisPreview(resultValue: unknown, exportValue: unknown
     const price = present ? positive(row.last_price) : null;
     if (!present) requireValue(row.last_price === null);
     const totals = activity(row);
-    for (const total of [totals.count, totals.volume]) {
+    for (const total of [totals.tradeCount, totals.tradeVolume]) {
       if (total === null) continue;
       if (state === "observed") requireValue(total > 0);
       if (state === "carried" || state === "no_execution") requireValue(total === 0);
     }
     const previous = knownPrices.get(id);
     if (state === "carried" && previous !== null) requireValue(price === previous);
-    if (price !== null || !(totals.count === 0 || totals.volume === 0)) knownPrices.set(id, price);
+    if (price !== null || !(totals.tradeCount === 0 || totals.tradeVolume === 0)) knownPrices.set(id, price);
     item.steps.push(step);
     item.prices.push(price);
     item.priceStates.push(state);
+    item.observations.push({ step, lastPrice: price, priceState: state, ...totals, ...quotes(row) });
   }
   requireValue(instruments.every((item) => item.steps.length === count));
-  return { analysisId: expected.analysisId, modelVersion, instruments };
+  return {
+    analysisId: expected.analysisId, modelVersion,
+    modelBundleSha256: model.bundle_sha256 as string,
+    inferencePolicySha256: model.inference_policy_sha256 as string,
+    snapshotId: result.snapshot_id as string, snapshotSha256: input.content_sha256 as string,
+    source: {
+      sourceId: source.source_id as string, sourceVersion: source.source_version as string,
+      configurationId: source.configuration_id as string, runId: source.run_id as string,
+      snapshotId: source.snapshot_id as string, stateRevision: source.state_revision as string,
+    },
+    instruments: instruments.map((item): PreviewInstrument => ({
+      ...item, intervals: item.intervals.map((interval) => ({
+        ...interval, stats: summarize(item.observations, interval),
+      })),
+    })),
+  };
 }

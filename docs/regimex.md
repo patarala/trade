@@ -73,6 +73,36 @@ whole history. Displayed step ranges use the simulator's numbering, starting at 
 both displayed endpoints are included. Missing prices remain gaps, and intervals
 without executions or sufficient observations stay distinct from direction labels.
 
+Selecting an interval also shows its price change, total trade count and share of
+steps without trades. Price change uses the first and last available prices inside
+the interval; when either endpoint is missing, the actual compared steps are shown.
+Fewer than two available prices leave the change unavailable. A trade total is
+shown only when every step has a known count. The inactive-step share uses known
+counts only, with coverage shown when any counts are missing. These are observation
+statistics, not explanations of the model's decision or estimates of its accuracy.
+
+For a run with multiple instruments, **Все инструменты** displays their charts
+together with a shared step cursor and zoom. The instrument selector chooses the
+interval table and CSV exports. **Изменение, %** expresses each price relative to
+that instrument's first available price in the complete run; zooming does not reset
+this reference. Switching back to **Цена** restores the original quote/base units.
+
+**Интервалы CSV** downloads all intervals of the selected instrument, retaining
+their exact boundaries. **Наблюдения CSV** downloads its observations within the
+displayed step range, or the complete run when the view is not zoomed. Both files
+include analysis, snapshot, model and instrument identifiers. The observation
+export preserves prices, counts, volumes and availability states; absent numeric
+values are empty cells and observed zeros remain `0`. CSV uses UTF-8 with a byte
+order mark, comma separators and decimal points. Spreadsheet import can select
+these settings if the application's regional defaults differ. Text cells that
+could be interpreted as formulas receive a leading apostrophe.
+
+CSV coordinates retain the original zero-based grid: `start` is inclusive and
+`stop` is exclusive. Separate display-step columns use the same one-based inclusive
+numbering as the interface. The files are generated locally from the already
+verified result and observation export; downloading them does not create an
+analysis or contact another service.
+
 The inline view uses the verified result JSON and observation export. It does not
 load report HTML into the simulator page. **Повторить загрузку** retries a failed
 preview request without creating a new analysis. **Скачать отчёт** still downloads

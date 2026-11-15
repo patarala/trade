@@ -7,10 +7,16 @@ from backend.app.api.routes.regimex import router as regimex_router
 from backend.app.api.routes.simulation_results import router as results_router
 from backend.app.api.routes.simulations import router as simulations_router
 from backend.app.api.routes.users import router as users_router
+from backend.app.core.config import settings
 from backend.app.integrations.regimex.errors import GatewayError
+from backend.app.integrations.regimex.limiter import RegimexConcurrencyMiddleware
 
 app = FastAPI(
     title="Exchange Simulator",
+)
+app.add_middleware(
+    RegimexConcurrencyMiddleware,
+    max_concurrent_requests=settings.regimex_max_concurrent_requests,
 )
 
 

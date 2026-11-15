@@ -3,9 +3,11 @@
 import ipaddress
 import re
 from dataclasses import dataclass, field
+from typing import Self
 from urllib.parse import urlsplit
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 IDENTITY_PATTERN = r"[A-Za-z0-9._:@-]{1,128}"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -57,3 +59,32 @@ class Connection:
     read_timeout: float = 10.0
     total_timeout: float = 30.0
     response_bytes: int = MAX_RESPONSE_BYTES
+
+
+class RegimexSettings(BaseSettings):
+    """The same connection settings for the API and its database-free diagnostic CLI."""
+
+    regimex_url: str | None = None
+    regimex_token: SecretStr | None = None
+    regimex_source_id: str = "trade"
+    regimex_allow_loopback_http: bool = False
+    regimex_max_concurrent_requests: int = Field(default=4, ge=1, le=16)
+
+    @model_validator(mode="after")
+    def validate_regimex(self) -> Self:
+        if not re.fullmatch(IDENTITY_PATTERN, self.regimex_source_id):
+            raise ValueError("REGIMEX_SOURCE_ID must be a stable ASCII source identifier")
+        validate_connection(self.regimex_url, self.regimex_token, self.regimex_allow_loopback_http)
+        return self
+
+    def regimex_connection(self) -> Connection | None:
+        if self.regimex_url is None or self.regimex_token is None:
+            return None
+        return Connection(self.regimex_url, self.regimex_token, self.regimex_source_id)
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )

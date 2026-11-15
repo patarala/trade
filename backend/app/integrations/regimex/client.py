@@ -1,6 +1,7 @@
 """Bounded requests to one configured origin, without redirects or browser credentials."""
 
 import http.client
+import logging
 import queue
 import re
 import socket
@@ -16,7 +17,34 @@ from .errors import GatewayError, invalid_response, unavailable
 from .json import json_bytes, strict_json
 
 _RESOLVERS = threading.BoundedSemaphore(16)
-_PATH = re.compile(r"/api/v1/integration/[A-Za-z0-9/-]+(?:\?limit=1)?")
+_PATH = re.compile(r"/api/v1/integration/[A-Za-z0-9/-]+")
+_HISTORY = re.compile(r"/api/v1/integration/analyses\?limit=([0-9]{1,2})(?:&offset=([0-9]{1,5}))?")
+_LOG = logging.getLogger(__name__)
+
+
+class TransportFailure(GatewayError):
+    """A safe operator category without an address, credential or raw exception."""
+
+    def __init__(self, category: str) -> None:
+        error = unavailable()
+        super().__init__(error.code, error.message, error.status, retryable=error.retryable)
+        self.category = category
+
+
+class UpstreamStatusFailure(GatewayError):
+    def __init__(self, error: GatewayError, upstream_status: int) -> None:
+        super().__init__(
+            error.code,
+            error.message,
+            error.status,
+            retryable=error.retryable,
+            retry_after=error.retry_after,
+        )
+        self.upstream_status = upstream_status
+
+
+class _ResolutionFailure(OSError):
+    pass
 
 
 def _addresses(host: str, port: int, deadline: float) -> list[tuple]:
@@ -29,7 +57,7 @@ def _addresses(host: str, port: int, deadline: float) -> list[tuple]:
         try:
             result.put(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[:32])
         except OSError, UnicodeError:
-            result.put(OSError("Cannot resolve the configured analysis service"))
+            result.put(_ResolutionFailure("Cannot resolve the configured analysis service"))
         finally:
             _RESOLVERS.release()
 
@@ -49,17 +77,17 @@ class UpstreamResponse:
     body: bytes
 
 
-class RegimexClient:
-    def __init__(self, connection: Connection, *, subject: str, run_id: str) -> None:
-        if not re.fullmatch(IDENTITY_PATTERN, subject) or not re.fullmatch(
-            IDENTITY_PATTERN, run_id
-        ):
-            raise ValueError("Invalid verified subject or run identifier")
+class _ConfiguredClient:
+    def __init__(self, connection: Connection) -> None:
         self.connection = connection
-        self.subject = subject
-        self.run_id = run_id
         # One deadline spans upload, submission and verification in this browser request.
         self.deadline = time.monotonic() + connection.total_timeout
+
+    def _allows(self, method: str, path: str) -> bool:
+        raise NotImplementedError
+
+    def _credentials(self, path: str) -> dict[str, str]:
+        raise NotImplementedError
 
     def request(
         self,
@@ -71,7 +99,7 @@ class RegimexClient:
     ) -> UpstreamResponse:
         if (
             method not in {"GET", "POST"}
-            or not _PATH.fullmatch(path)
+            or not self._allows(method, path)
             or (body is not None and len(body) > MAX_RESPONSE_BYTES)
             or (
                 idempotency_key is not None
@@ -81,17 +109,16 @@ class RegimexClient:
             raise ValueError("Invalid internal analysis request")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise unavailable()
+            raise TransportFailure("timeout")
+        started = time.monotonic()
         settings = self.connection
         parsed = urlsplit(settings.url)
         assert parsed.hostname is not None
         connection = http.client.HTTPConnection(parsed.hostname, parsed.port)
         headers = {
-            "Authorization": "Bearer " + settings.token.get_secret_value(),
-            "X-Regimex-Subject": self.subject,
-            "X-Regimex-Run-ID": self.run_id,
             "Accept": "application/json, text/html",
             "Accept-Encoding": "identity",
+            **self._credentials(path),
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -115,6 +142,7 @@ class RegimexClient:
                 port,
                 min(self.deadline, time.monotonic() + settings.connect_timeout),
             )
+            last_failure = OSError("Cannot connect to the configured analysis service")
             for family, kind, protocol, _, address in addresses:
                 transport = socket.socket(family, kind, protocol)
                 try:
@@ -132,10 +160,14 @@ class RegimexClient:
                         transport.do_handshake()
                     connection.sock = transport
                     break
-                except OSError:
+                except ssl.SSLError:
+                    transport.close()
+                    raise
+                except OSError as error:
+                    last_failure = error
                     transport.close()
             else:
-                raise OSError("Cannot connect to the configured analysis service")
+                raise last_failure
             self._timeout(transport)
             connection.request(method, path, body=body, headers=headers)
             self._timeout(transport)
@@ -154,7 +186,7 @@ class RegimexClient:
             if expected is not None and expected > settings.response_bytes:
                 raise invalid_response()
             data = bytearray()
-            while True:
+            while not response.isclosed():
                 self._timeout(transport)
                 block = response.read1(min(65536, settings.response_bytes + 1 - len(data)))
                 if not block:
@@ -167,10 +199,33 @@ class RegimexClient:
             if time.monotonic() > self.deadline:
                 raise TimeoutError
             return UpstreamResponse(response.getheader("Content-Type", ""), bytes(data))
-        except GatewayError:
+        except GatewayError as error:
+            _LOG.info(
+                "regimex_upstream_failed code=%s duration_ms=%d",
+                error.code,
+                round((time.monotonic() - started) * 1000),
+            )
             raise
-        except OSError, http.client.HTTPException, ValueError, UnicodeError:
-            raise unavailable() from None
+        except (OSError, http.client.HTTPException, ValueError, UnicodeError) as error:
+            category = (
+                "certificate_rejected"
+                if isinstance(error, ssl.SSLCertVerificationError)
+                else "tls_failed"
+                if isinstance(error, ssl.SSLError)
+                else "dns_failed"
+                if isinstance(error, _ResolutionFailure)
+                else "timeout"
+                if isinstance(error, TimeoutError)
+                else "connection_failed"
+                if isinstance(error, OSError)
+                else "invalid_protocol"
+            )
+            _LOG.info(
+                "regimex_transport_failed category=%s duration_ms=%d",
+                category,
+                round((time.monotonic() - started) * 1000),
+            )
+            raise TransportFailure(category) from None
         finally:
             watchdog.cancel()
             if response is not None:
@@ -189,32 +244,34 @@ class RegimexClient:
     def _status_error(response: http.client.HTTPResponse) -> None:
         status = response.status
         if status == 404:
-            raise GatewayError("not_found", "The analysis resource was not found.", 404)
-        if status == 409:
-            raise GatewayError(
+            error = GatewayError("not_found", "The analysis resource was not found.", 404)
+        elif status == 409:
+            error = GatewayError(
                 "analysis_conflict",
                 "The analysis is not available in its current state.",
                 409,
             )
-        if status == 429:
+        elif status == 429:
             raw = response.getheader("Retry-After", "")
             retry_after = int(raw) if re.fullmatch(r"[0-9]{1,4}", raw) else 5
-            raise GatewayError(
+            error = GatewayError(
                 "analysis_busy",
                 "Regimex is busy. Retry after the indicated delay.",
                 429,
                 retryable=True,
                 retry_after=max(1, min(3600, retry_after)),
             )
-        if status in {401, 403}:
-            raise GatewayError(
+        elif status in {401, 403}:
+            error = GatewayError(
                 "connection_access_denied",
                 "The Regimex connection needs attention from the service administrator.",
                 503,
             )
-        if 300 <= status < 400 or status in {400, 413, 415, 422}:
-            raise invalid_response()
-        raise unavailable()
+        elif 300 <= status < 400 or status in {400, 413, 415, 422}:
+            error = invalid_response()
+        else:
+            error = unavailable()
+        raise UpstreamStatusFailure(error, status)
 
     def json(
         self,
@@ -239,3 +296,49 @@ class RegimexClient:
             return value
         except ValueError, UnicodeError, RecursionError:
             raise invalid_response() from None
+
+
+class RegimexClient(_ConfiguredClient):
+    def __init__(self, connection: Connection, *, subject: str, run_id: str) -> None:
+        if not re.fullmatch(IDENTITY_PATTERN, subject) or not re.fullmatch(
+            IDENTITY_PATTERN, run_id
+        ):
+            raise ValueError("Invalid verified subject or run identifier")
+        super().__init__(connection)
+        self.subject = subject
+        self.run_id = run_id
+
+    def _allows(self, method: str, path: str) -> bool:
+        if _PATH.fullmatch(path):
+            return True
+        history = _HISTORY.fullmatch(path)
+        return (
+            method == "GET"
+            and history is not None
+            and 1 <= int(history[1]) <= 21
+            and (history[2] is None or int(history[2]) <= 10000)
+        )
+
+    def _credentials(self, path: str) -> dict[str, str]:
+        return {
+            "Authorization": "Bearer " + self.connection.token.get_secret_value(),
+            "X-Regimex-Subject": self.subject,
+            "X-Regimex-Run-ID": self.run_id,
+        }
+
+
+class DiagnosticClient(_ConfiguredClient):
+    """Read-only self-checks; never create a delegated user or send secrets to health routes."""
+
+    def _allows(self, method: str, path: str) -> bool:
+        return method == "GET" and path in {
+            "/health/live",
+            "/health/ready",
+            "/health/models",
+            "/api/v1/connection",
+        }
+
+    def _credentials(self, path: str) -> dict[str, str]:
+        if path == "/api/v1/connection":
+            return {"Authorization": "Bearer " + self.connection.token.get_secret_value()}
+        return {}

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from pydantic import SecretStr
 
-from backend.app.integrations.regimex.client import RegimexClient
+from backend.app.integrations.regimex.client import RegimexClient, TransportFailure
 from backend.app.integrations.regimex.config import Connection
 from backend.app.integrations.regimex.errors import GatewayError
 
@@ -245,8 +245,9 @@ class RegimexHTTPTests(unittest.TestCase):
             url = f"https://127.0.0.1:{server.server_port}"
             path = "/api/v1/integration/analyses?limit=1"
             try:
-                with self.assertRaises(GatewayError):
+                with self.assertRaises(TransportFailure) as untrusted:
                     self.client(url=url).json("GET", path)
+                self.assertEqual(untrusted.exception.category, "certificate_rejected")
                 self.assertEqual(server.received, [])
                 with patch.dict(os.environ, {"SSL_CERT_FILE": str(certificate)}):
                     self.assertEqual(self.client(url=url).json("GET", path), {"ok": True})
@@ -256,8 +257,9 @@ class RegimexHTTPTests(unittest.TestCase):
                     )
                     server.received.clear()
                     # The certificate covers only the numeric IPv4 address.
-                    with self.assertRaises(GatewayError):
+                    with self.assertRaises(TransportFailure) as mismatch:
                         self.client(url=f"https://localhost:{server.server_port}").json("GET", path)
+                    self.assertEqual(mismatch.exception.category, "certificate_rejected")
                     self.assertEqual(server.received, [])
             finally:
                 server.shutdown()
@@ -269,9 +271,23 @@ class RegimexHTTPTests(unittest.TestCase):
             "https://other.example.test",
             "/api/v1/integration/analyses#x",
             "/api/v1/integration/analyses?url=evil",
+            "/api/v1/integration/analyses?limit=22&offset=0",
+            "/api/v1/integration/analyses?limit=1&offset=10001",
+            "/api/v1/integration/analyses?limit=0&offset=0",
+            "/api/v1/integration/analyses?limit=1&offset=0&limit=2",
+            "/api/v1/integration/snapshots?limit=1&offset=0",
         ):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.client().json("GET", path)
         with self.assertRaises(ValueError):
             RegimexClient(self.connection, subject="7\r\nAuthorization: other", run_id="42")
         self.assertEqual(self.server.received, [])
+
+    def test_only_bounded_analysis_history_pages_are_allowed(self):
+        for path in (
+            "/api/v1/integration/analyses?limit=1",
+            "/api/v1/integration/analyses?limit=11&offset=20",
+            "/api/v1/integration/analyses?limit=21&offset=10000",
+        ):
+            self.assertEqual(self.client().json("GET", path), {"ok": True})
+        self.assertEqual(len(self.server.received), 3)

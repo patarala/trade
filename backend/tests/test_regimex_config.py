@@ -27,6 +27,17 @@ class RegimexConfigurationTests(unittest.TestCase):
         settings = configured()
         self.assertIsNone(settings.regimex_connection())
         self.assertEqual(settings.regimex_source_id, "trade")
+        self.assertEqual(settings.regimex_max_concurrent_requests, 4)
+
+    def test_gateway_concurrency_is_bounded_per_api_process(self):
+        for limit in (1, 4, 16):
+            self.assertEqual(
+                configured(regimex_max_concurrent_requests=limit).regimex_max_concurrent_requests,
+                limit,
+            )
+        for limit in (0, -1, 17, 1.5):
+            with self.subTest(limit=limit), self.assertRaises(ValidationError):
+                configured(regimex_max_concurrent_requests=limit)
 
     def test_https_connection_keeps_secret_out_of_representations(self):
         settings = configured(regimex_url="https://analysis.example.test", regimex_token=TOKEN)

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { RegimexApi } from "./regimexApi";
 import type { AnalysisState } from "./regimexApi";
 import { pending, RegimexController } from "./regimexController";
+import { RegimexResult } from "./RegimexResult";
 
 const stateLabels: Record<AnalysisState, string> = {
   queued: "В очереди",
@@ -39,9 +40,7 @@ export function RegimexAnalysis({ simulationId, runId, token }: Props) {
 
   return <section className="panel regimex-panel" aria-label="Анализ Regimex">
     <div className="regimex-heading">
-      <div><h2>Анализ Regimex</h2>
-        <p className="panel-note">Рыночные режимы по результатам запуска.</p>
-      </div>
+      <h2>Анализ Regimex</h2>
       {analysis && <span className={`run-status ${badge}`} role="status">
         {stateLabels[analysis.state]}
       </span>}
@@ -53,12 +52,21 @@ export function RegimexAnalysis({ simulationId, runId, token }: Props) {
     {reportUnavailable && <p className="panel-note">Анализ завершён, но отчёт недоступен.</p>}
     {view.pollingPaused && active && !view.error && <p className="panel-note">Автообновление приостановлено. Проверьте состояние вручную.</p>}
 
+    {view.previewLoading && <p className="panel-note" aria-live="polite">Загружаем классификацию…</p>}
+    {view.previewError && <div className="form-error" role="alert">
+      {view.previewError}{" "}
+      <button className="text-button" type="button" disabled={view.previewLoading}
+        onClick={() => { void controller.refreshPreview(); }}>Повторить загрузку</button>
+    </div>}
+    {analysis?.state === "succeeded" && view.preview?.analysisId === analysis.analysis_id
+      && <RegimexResult key={view.preview.analysisId} preview={view.preview} />}
+
     {(view.status?.eligible || active || view.error || view.confirmationRequired) && <div className="card-actions regimex-actions">
       {canSubmit && !view.confirmationRequired && <button className="primary-button" disabled={busy}
         onClick={() => { void controller.submit(); }} type="button">
         {view.submitting ? "Отправляем…" : analysis ? "Повторить анализ" : "Анализировать"}
       </button>}
-      {analysis?.state === "succeeded" && analysis.report_available && <button className="primary-button"
+      {analysis?.state === "succeeded" && analysis.report_available && <button className="secondary-button"
         disabled={view.downloading !== null} onClick={() => { void controller.download("report"); }} type="button">
         {view.downloading === "report" ? "Скачиваем…" : "Скачать отчёт"}
       </button>}

@@ -1,7 +1,8 @@
 import { RegimexRequestError, saveDownload } from "./regimexApi";
 import type { Analysis, DownloadKind, RegimexApi, RegimexStatus } from "./regimexApi";
+import type { AnalysisPreview } from "./regimexResult";
 
-type Client = Pick<RegimexApi, "status" | "poll" | "submit" | "download">;
+type Client = Pick<RegimexApi, "status" | "poll" | "submit" | "download" | "preview">;
 type Schedule = (callback: () => void, milliseconds: number) => () => void;
 
 export type AnalysisPanelState = {
@@ -12,6 +13,9 @@ export type AnalysisPanelState = {
   error: string;
   confirmationRequired: boolean;
   pollingPaused: boolean;
+  preview: AnalysisPreview | null;
+  previewLoading: boolean;
+  previewError: string | null;
 };
 
 export function pending(analysis: Analysis | null): boolean {
@@ -20,6 +24,11 @@ export function pending(analysis: Analysis | null): boolean {
 
 function message(cause: unknown): string {
   return cause instanceof RegimexRequestError ? cause.message : "Не удалось связаться с сервисом анализа.";
+}
+
+function previewTarget(status: RegimexStatus | null): string | null {
+  return status?.enabled && status.eligible && status.analysis?.state === "succeeded"
+    && status.analysis.result_available ? status.analysis.analysis_id : null;
 }
 
 const schedule: Schedule = (callback, milliseconds) => {
@@ -36,9 +45,12 @@ export class RegimexController {
   private state: AnalysisPanelState = {
     status: null, loading: true, submitting: false, downloading: null,
     error: "", confirmationRequired: false, pollingPaused: false,
+    preview: null, previewLoading: false, previewError: null,
   };
   private lifetime = new AbortController();
   private request: AbortController | null = null;
+  private previewRequest: AbortController | null = null;
+  private previewGeneration = 0;
   private cancelPoll: (() => void) | null = null;
   private active = false;
   private generation = 0;
@@ -61,11 +73,51 @@ export class RegimexController {
     this.listeners.forEach((listener) => listener());
   }
 
+  private setStatus(status: RegimexStatus, patch: Partial<AnalysisPanelState> = {}) {
+    const identityChanged = previewTarget(status) !== previewTarget(this.state.status);
+    if (identityChanged) this.cancelPreview();
+    this.update({ ...patch, status,
+      ...(identityChanged ? { preview: null, previewLoading: false, previewError: null } : {}),
+    });
+    if (previewTarget(status) && !this.state.preview && !this.state.previewLoading && !this.state.previewError) {
+      void this.refreshPreview();
+    }
+  }
+
+  private cancelPreview() {
+    this.previewGeneration += 1;
+    this.previewRequest?.abort();
+    this.previewRequest = null;
+  }
+
+  async refreshPreview() {
+    const analysisId = previewTarget(this.state.status);
+    if (!this.active || !analysisId || this.state.previewLoading || this.state.preview) return;
+    this.cancelPreview();
+    const request = new AbortController();
+    this.previewRequest = request;
+    const generation = this.previewGeneration;
+    const signal = AbortSignal.any([this.lifetime.signal, request.signal]);
+    const current = () => this.active && !signal.aborted && generation === this.previewGeneration
+      && previewTarget(this.state.status) === analysisId;
+    this.update({ previewLoading: true, previewError: null });
+    try {
+      const preview = await this.client.preview(analysisId, signal);
+      if (!current()) return;
+      this.update({ preview, previewLoading: false });
+    } catch (cause) {
+      if (!current()) return;
+      this.update({ previewError: message(cause), previewLoading: false });
+    } finally {
+      if (generation === this.previewGeneration) this.previewRequest = null;
+    }
+  }
+
   start() {
     if (this.active) return;
     this.active = true;
     this.lifetime = new AbortController();
-    this.update({ submitting: false, downloading: null });
+    this.update({ submitting: false, downloading: null, previewLoading: false });
     void this.refresh();
   }
 
@@ -73,6 +125,7 @@ export class RegimexController {
     this.active = false;
     this.generation += 1;
     this.request?.abort();
+    this.cancelPreview();
     this.lifetime.abort();
     this.cancelPoll?.();
     this.cancelPoll = null;
@@ -104,7 +157,7 @@ export class RegimexController {
       const status = await this.client.status(request.signal);
       if (!request.current()) return;
       const unresolved = uncertainMessage && (!status.analysis || ["failed", "cancelled"].includes(status.analysis.state));
-      this.update({ status, loading: false, confirmationRequired: false, error: unresolved ? uncertainMessage : "" });
+      this.setStatus(status, { loading: false, confirmationRequired: false, error: unresolved ? uncertainMessage : "" });
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;
@@ -132,7 +185,7 @@ export class RegimexController {
     try {
       const result = await this.client.poll(analysis.analysis_id, request.signal);
       if (!request.current() || !this.state.status) return;
-      this.update({ status: { ...this.state.status, analysis: result }, error: "", pollingPaused: false });
+      this.setStatus({ ...this.state.status, analysis: result }, { error: "", pollingPaused: false });
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;
@@ -153,7 +206,7 @@ export class RegimexController {
       const analysis = await this.client.submit(retryOf, request.signal);
       if (!request.current()) return;
       this.pollCount = 0;
-      this.update({ status: { ...status, analysis }, submitting: false, confirmationRequired: false });
+      this.setStatus({ ...status, analysis }, { submitting: false, confirmationRequired: false });
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;

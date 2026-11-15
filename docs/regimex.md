@@ -62,9 +62,18 @@ requires a numeric loopback address and must be unset for HTTPS deployments.
 ## Use the analysis
 
 Open an experiment's run results. Once the run is complete, select **Анализировать**
-in **Анализ Regimex**. The page shows the job state and offers **Скачать отчёт**
-when the HTML report is ready. Open the downloaded file in a browser; it works
-offline. **Скачать данные** downloads the exact observation export.
+in **Анализ Regimex**. When the job completes, its classification appears on the
+page: select an instrument to see its price and direction intervals together.
+Select an interval to inspect that part of the run, or reset the view to see the
+whole history. Displayed step ranges use the simulator's numbering, starting at 1;
+both displayed endpoints are included. Missing prices remain gaps, and intervals
+without executions or sufficient observations stay distinct from direction labels.
+
+The inline view uses the verified result JSON and observation export. It does not
+load report HTML into the simulator page. **Повторить загрузку** retries a failed
+preview request without creating a new analysis. **Скачать отчёт** still downloads
+the full interactive HTML report, which works offline. **Скачать данные** downloads
+the exact observation export.
 
 Reloading the page retrieves the run's analysis from Regimex. Repeating a submission
 after a lost response reuses the same job. A failed or cancelled job can be explicitly

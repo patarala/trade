@@ -5,8 +5,9 @@ Web-система имитационного моделирования бир�
 
 ## Optional Regimex analysis
 
-This fork can send a completed run to Regimex for market-regime analysis.
-The connection is disabled by default. See [setup and usage](docs/regimex.md)
+This fork can send a completed run to Regimex for market-regime analysis and show
+its classification alongside the simulator's results. Downloadable reports also
+work offline. The connection is disabled by default. See [setup and usage](docs/regimex.md)
 for backend configuration, export semantics and integration tests.
 
 ## Структура

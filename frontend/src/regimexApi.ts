@@ -1,3 +1,6 @@
+import { createAnalysisPreview, InvalidAnalysisPreview } from "./regimexResult";
+import type { AnalysisPreview } from "./regimexResult";
+
 export type AnalysisState = "queued" | "running" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
 
 export type Analysis = {
@@ -110,12 +113,14 @@ async function responseError(response: Response): Promise<RegimexRequestError> {
 
 export class RegimexApi {
   private base: string;
+  private simulationId: number;
   private runId: number;
   private token: string;
 
   constructor(simulationId: number, runId: number, token: string) {
     if (![simulationId, runId].every((id) => Number.isSafeInteger(id) && id > 0)) throw invalidResponse();
     this.base = `/api/simulations/${simulationId}/regimex`;
+    this.simulationId = simulationId;
     this.runId = runId;
     this.token = token;
   }
@@ -136,14 +141,14 @@ export class RegimexApi {
     return response;
   }
 
-  private async json(suffix: string, signal: AbortSignal, body?: object): Promise<unknown> {
+  private async json(suffix: string, signal: AbortSignal, body?: object, limit = 128 * 1024): Promise<unknown> {
     const response = await this.request(suffix, signal, body);
     if (response.headers.get("Content-Type")?.split(";", 1)[0].trim() !== "application/json") {
       await response.body?.cancel();
       throw invalidResponse();
     }
     try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readBody(response, 128 * 1024)));
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readBody(response, limit)));
     } catch (cause) {
       if (cause instanceof SyntaxError || cause instanceof TypeError) throw invalidResponse();
       throw cause;
@@ -170,6 +175,26 @@ export class RegimexApi {
   async submit(retryOf: string | null, signal: AbortSignal): Promise<Analysis> {
     if (retryOf !== null && !UUID.test(retryOf)) throw invalidResponse();
     return analysis(await this.json("/analyses", signal, retryOf ? { retry_of: retryOf } : {}), this.runId);
+  }
+
+  async preview(id: string, signal: AbortSignal): Promise<AnalysisPreview> {
+    if (!UUID.test(id)) throw invalidResponse();
+    const pending = new AbortController();
+    const requestSignal = AbortSignal.any([signal, pending.signal]);
+    try {
+      const [result, input] = await Promise.all([
+        this.json(`/analyses/${id}/result`, requestSignal, undefined, MAX_DOWNLOAD_BYTES),
+        this.json("/export", requestSignal, undefined, MAX_DOWNLOAD_BYTES),
+      ]);
+      requestSignal.throwIfAborted();
+      return createAnalysisPreview(result, input, {
+        analysisId: id, simulationId: this.simulationId, runId: this.runId,
+      });
+    } catch (cause) {
+      pending.abort();
+      if (cause instanceof InvalidAnalysisPreview) throw new RegimexRequestError(cause.message, 502);
+      throw cause;
+    }
   }
 
   async download(kind: DownloadKind, id: string | null, signal: AbortSignal): Promise<Blob> {

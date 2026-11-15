@@ -1,0 +1,84 @@
+.regimex-result {
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+  min-width: 0;
+}
+
+.regimex-result-heading,
+.regimex-chart-heading,
+.regimex-interval-heading,
+.regimex-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.regimex-model {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.regimex-result-heading label { min-width: 180px; }
+.regimex-chart-heading { margin-top: 22px; }
+.regimex-chart-heading h3 { font-size: 15px; margin: 0; }
+.regimex-chart-heading > div { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+.regimex-chart { width: 100%; min-width: 0; margin-top: 12px; }
+.regimex-chart svg { display: block; overflow: visible; border-radius: 4px; }
+.regimex-chart svg:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.regimex-chart text { fill: #536071; font-size: 12px; font-variant-numeric: tabular-nums; }
+.regimex-grid-line { stroke: #e5eaf0; }
+.regimex-price-line { fill: none; stroke: #263c51; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.regimex-carried-line { stroke-dasharray: 4 4; stroke: #687487; }
+.regimex-cursor line { stroke: #687487; stroke-width: 1; stroke-dasharray: 3 3; }
+.regimex-cursor circle { fill: white; stroke: #263c51; stroke-width: 2; }
+.regimex-band { stroke: none; }
+.regimex-growth { fill: #277e68; background: #277e68; }
+.regimex-decline { fill: #b65047; background: #b65047; }
+.regimex-sideways { fill: #4774af; background: #4774af; }
+.regimex-no_trades { fill: #b3bec8; background: repeating-linear-gradient(135deg, #d7dde3 0, #d7dde3 3px, #8995a2 3px, #8995a2 4px); }
+.regimex-insufficient_data { fill: #e4e7eb; background: #e4e7eb; }
+
+.regimex-point {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  min-height: 40px;
+  color: #536071;
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.regimex-point strong { color: var(--ink); }
+.regimex-carried-key { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.regimex-carried-key > span { width: 22px; border-top: 2px dashed #687487; }
+.regimex-legend { display: flex; flex-wrap: wrap; gap: 10px 20px; padding: 0; margin: 4px 0 24px; list-style: none; font-size: 13px; }
+.regimex-legend li { display: flex; align-items: center; gap: 6px; }
+.regimex-swatch { display: inline-block; width: 13px; height: 13px; border: 1px solid #00000012; border-radius: 2px; flex-shrink: 0; }
+.regimex-interval-heading { justify-content: flex-start; gap: 8px; }
+.regimex-interval-heading h4 { margin: 0; font-size: 15px; }
+.regimex-interval-heading > span { font-size: 13px; color: var(--muted); }
+.regimex-interval-table { margin-top: 8px; }
+.regimex-interval-table th { padding: 10px 8px; font-size: 11px; }
+.regimex-interval-table td { padding: 6px 8px; font-size: 14px; }
+.regimex-interval-table td:first-child { display: table-cell; width: 38%; }
+.regimex-interval-table td > .regimex-swatch { margin-right: 7px; vertical-align: -1px; }
+.regimex-interval-button { border: 0; background: transparent; padding: 8px 0; color: var(--primary-dark); font-weight: 700; text-align: left; font-variant-numeric: tabular-nums; }
+.regimex-interval-button:hover { text-decoration: underline; }
+.regimex-interval-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.regimex-interval-button > span { margin-left: 5px; }
+.regimex-selected { background: #f0f6f3; }
+.regimex-pagination { margin-top: 12px; font-size: 13px; }
+.regimex-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+@media (max-width: 520px) {
+  .regimex-result-heading { align-items: flex-start; }
+  .regimex-result-heading label { width: 100%; }
+  .regimex-point { min-height: 64px; }
+  .regimex-legend { gap: 10px 14px; }
+}

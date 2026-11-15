@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
+import { previewPayloads } from "./regimex-fixtures.mjs";
 
 async function moduleSource(name) {
   const source = await readFile(new URL(`../src/${name}.ts`, import.meta.url), "utf8");
@@ -14,7 +15,9 @@ async function moduleSource(name) {
 }
 const directory = await mkdtemp(join(tmpdir(), "trade-regimex-tests-"));
 after(() => rm(directory, { recursive: true, force: true }));
-await writeFile(join(directory, "regimexApi.mjs"), await moduleSource("regimexApi"));
+await writeFile(join(directory, "regimexResult.mjs"), await moduleSource("regimexResult"));
+await writeFile(join(directory, "regimexApi.mjs"),
+  (await moduleSource("regimexApi")).replaceAll('"./regimexResult"', '"./regimexResult.mjs"'));
 await writeFile(join(directory, "regimexController.mjs"),
   (await moduleSource("regimexController")).replaceAll('"./regimexApi"', '"./regimexApi.mjs"'));
 const { RegimexApi, RegimexRequestError } = await import(pathToFileURL(join(directory, "regimexApi.mjs")));
@@ -28,6 +31,7 @@ const info = (state = "queued", id = firstId) => ({
 });
 const status = (analysis = null) => ({ enabled: true, eligible: true, reason: null, analysis });
 const settled = () => new Promise((resolve) => setImmediate(resolve));
+const preview = (analysisId = firstId) => ({ analysisId, modelVersion: "tcn-preview", instruments: [] });
 
 function deferred() {
   let resolve, reject;
@@ -41,6 +45,7 @@ function panel(overrides = {}) {
   const client = {
     status: async () => status(), poll: async () => info("running"),
     submit: async () => info(), download: async () => new Blob(["report"]),
+    preview: async (id) => preview(id),
     ...overrides,
   };
   const controller = new RegimexController(client,
@@ -283,4 +288,197 @@ test("report download verifies media type and streams within the size limit", as
   }), { headers: { "Content-Type": "text/html" } });
   await assert.rejects(api.download("report", firstId, new AbortController().signal), RegimexRequestError);
   assert.equal(cancelled, true);
+});
+
+test("classification loads only after success and stays cached across status refreshes", async () => {
+  let completed = false;
+  const ids = [];
+  const p = panel({
+    status: async () => status(info(completed ? "succeeded" : "running")),
+    poll: async () => { completed = true; return info("succeeded"); },
+    preview: async (id) => { ids.push(id); return preview(id); },
+  });
+  p.controller.start();
+  await settled();
+  assert.deepEqual(ids, []);
+  assert.equal(p.controller.getSnapshot().previewLoading, false);
+  await p.tick();
+  assert.deepEqual(ids, [firstId]);
+  assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
+  await p.controller.refresh();
+  await p.controller.refreshPreview();
+  assert.deepEqual(ids, [firstId]);
+  p.controller.stop();
+});
+
+test("preview errors are independent of reports and retry only on explicit preview retry", async () => {
+  let attempts = 0, submissions = 0;
+  const p = panel({
+    status: async () => status(info("succeeded")),
+    submit: async () => { submissions += 1; return info(); },
+    preview: async (id) => {
+      attempts += 1;
+      if (attempts === 1) throw new RegimexRequestError("Classification unavailable", 503);
+      return preview(id);
+    },
+  });
+  p.controller.start();
+  await settled();
+  assert.equal(p.controller.getSnapshot().previewError, "Classification unavailable");
+  assert.equal(p.controller.getSnapshot().error, "");
+  assert.equal(p.controller.getSnapshot().previewLoading, false);
+  await p.controller.refresh();
+  assert.equal(attempts, 1);
+  await p.controller.download("report");
+  assert.equal(p.downloads.length, 1);
+  assert.equal(p.controller.getSnapshot().previewError, "Classification unavailable");
+  await p.controller.refreshPreview();
+  assert.equal(attempts, 2);
+  assert.equal(submissions, 0);
+  assert.equal(p.controller.getSnapshot().previewError, null);
+  assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
+  p.controller.stop();
+});
+
+test("changing the analysis aborts old preview work and ignores late success or failure", async (t) => {
+  for (const failure of [false, true]) await t.test(failure ? "late failure" : "late success", async () => {
+    const delayed = deferred();
+    let latest = firstId, oldSignal;
+    const p = panel({
+      status: async () => status(info("succeeded", latest)),
+      preview: async (id, signal) => {
+        if (id === firstId) { oldSignal = signal; return delayed.promise; }
+        return preview(id);
+      },
+    });
+    p.controller.start();
+    await settled();
+    assert.equal(p.controller.getSnapshot().previewLoading, true);
+    latest = secondId;
+    await p.controller.refresh();
+    await settled();
+    assert.equal(oldSignal.aborted, true);
+    if (failure) delayed.reject(new RegimexRequestError("Old failure", 503));
+    else delayed.resolve(preview(firstId));
+    await settled();
+    assert.equal(p.controller.getSnapshot().preview.analysisId, secondId);
+    assert.equal(p.controller.getSnapshot().previewError, null);
+    assert.equal(p.controller.getSnapshot().previewLoading, false);
+    p.controller.stop();
+  });
+});
+
+test("disabling integration or leaving a run removes and fences its classification", async (t) => {
+  for (const change of ["disable", "stop"]) await t.test(change, async () => {
+    const delayed = deferred();
+    let enabled = true, signal;
+    const p = panel({
+      status: async () => ({ ...status(info("succeeded")), enabled }),
+      preview: async (_id, value) => { signal = value; return delayed.promise; },
+    });
+    p.controller.start();
+    await settled();
+    if (change === "stop") p.controller.stop();
+    else { enabled = false; await p.controller.refresh(); }
+    delayed.resolve(preview());
+    await settled();
+    assert.equal(signal.aborted, true);
+    assert.equal(p.controller.getSnapshot().preview, null);
+    assert.equal(p.controller.getSnapshot().previewError, null);
+    p.controller.stop();
+  });
+});
+
+test("restart of the same controller fences the previous lifetime's preview", async () => {
+  const delayed = deferred();
+  let attempts = 0;
+  const p = panel({
+    status: async () => status(info("succeeded")),
+    preview: async (id) => {
+      attempts += 1;
+      return attempts === 1 ? delayed.promise : { ...preview(id), modelVersion: "current" };
+    },
+  });
+  p.controller.start();
+  await settled();
+  p.controller.stop();
+  p.controller.start();
+  await settled();
+  delayed.resolve({ ...preview(), modelVersion: "old" });
+  await settled();
+  assert.equal(attempts, 2);
+  assert.equal(p.controller.getSnapshot().preview.modelVersion, "current");
+  p.controller.stop();
+});
+
+test("preview API accepts full-size native runs and fetches only bound JSON endpoints", async (t) => {
+  const payloads = previewPayloads(4096);
+  assert.ok(JSON.stringify(payloads.input).length > 128 * 1024);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url, options });
+    return Response.json(url.includes("/result?") ? payloads.result : payloads.input);
+  });
+  const result = await new RegimexApi(3, 7, "user-jwt").preview(firstId, new AbortController().signal);
+  assert.equal(result.instruments.length, 2);
+  assert.equal(result.instruments[1].steps.length, 4096);
+  assert.deepEqual(calls.map((call) => call.url).sort(), [
+    `/api/simulations/3/regimex/analyses/${firstId}/result?run_id=7`,
+    "/api/simulations/3/regimex/export?run_id=7",
+  ].sort());
+  for (const { options } of calls) {
+    assert.equal(options.method, "GET");
+    assert.equal(options.headers.get("Authorization"), "Bearer user-jwt");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.mode, "same-origin");
+  }
+});
+
+test("preview API refuses mismatched content and never falls back to an HTML response", async (t) => {
+  const payloads = previewPayloads();
+  payloads.result.snapshot_sha256 = "f".repeat(64);
+  t.mock.method(globalThis, "fetch", async (url) => Response.json(
+    url.includes("/result?") ? payloads.result : payloads.input,
+  ));
+  const api = new RegimexApi(3, 7, "user-jwt");
+  await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
+  globalThis.fetch = async () => new Response("<h1>Unexpected report</h1>", { headers: { "Content-Type": "text/html" } });
+  await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
+});
+
+test("each preview input has a 16 MiB streaming cap and failure aborts its sibling request", async (t) => {
+  for (const oversized of ["result", "export"]) await t.test(oversized, async (caseTest) => {
+    const payloads = previewPayloads();
+    const signals = [];
+    let cancelled = false;
+    caseTest.mock.method(globalThis, "fetch", async (url, options) => {
+      signals.push(options.signal);
+      const kind = url.includes("/result?") ? "result" : "export";
+      if (kind !== oversized) return Response.json(kind === "result" ? payloads.result : payloads.input);
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(16 * 1024 * 1024));
+          controller.enqueue(new Uint8Array(1));
+        },
+        cancel() { cancelled = true; },
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+    const api = new RegimexApi(3, 7, "user-jwt");
+    await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
+    assert.equal(cancelled, true);
+    assert.ok(signals.every((signal) => signal.aborted));
+  });
+});
+
+test("preview abort is honored even when a transport supplies a late complete response", async (t) => {
+  const payloads = previewPayloads(), delayed = deferred();
+  t.mock.method(globalThis, "fetch", async (url) => {
+    await delayed.promise;
+    return Response.json(url.includes("/result?") ? payloads.result : payloads.input);
+  });
+  const controller = new AbortController();
+  const pending = new RegimexApi(3, 7, "user-jwt").preview(firstId, controller.signal);
+  controller.abort();
+  delayed.resolve();
+  await assert.rejects(pending, { name: "AbortError" });
 });

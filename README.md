@@ -3,6 +3,12 @@
 Web-система имитационного моделирования биржевой торговли
 для тестирования торговых стратегий.
 
+## Optional Regimex analysis
+
+This fork can send a completed run to Regimex for market-regime analysis.
+The connection is disabled by default. See [setup and usage](docs/regimex.md)
+for backend configuration, export semantics and integration tests.
+
 ## Структура
 
 - `backend` — серверная часть на FastAPI;
@@ -14,8 +20,8 @@ Web-система имитационного моделирования бир�
 
 ### Требования
 
-- Python 3;
-- Node.js и npm;
+- Python 3.14.4;
+- Node.js 24.22.3 и npm;
 - Docker с поддержкой Docker Compose.
 
 Все команды ниже выполняются из корня проекта.
@@ -57,7 +63,7 @@ Linux/macOS:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r backend/requirements.txt
+python -m pip install -r backend/requirements.lock
 ```
 
 Windows PowerShell:
@@ -65,7 +71,7 @@ Windows PowerShell:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r backend/requirements.txt
+python -m pip install -r backend/requirements.lock
 ```
 
 ### 4. Применить миграции

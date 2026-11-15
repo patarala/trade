@@ -9,6 +9,30 @@
   --danger: #a33b3b;
 }
 
+.regimex-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.regimex-heading .panel-note {
+  margin-bottom: 0;
+}
+
+.regimex-panel .form-error {
+  overflow-wrap: anywhere;
+}
+
+.regimex-actions {
+  margin-top: 16px;
+}
+
+.regimex-actions .primary-button {
+  margin-top: 0;
+}
+
 .auth-layout {
   min-height: 100vh;
   display: grid;

@@ -8,6 +8,7 @@ import {
 } from "./api";
 import { decimalLabel, runStatusLabel } from "./simulationDisplay";
 import { useRequest } from "./useRequest";
+import { RegimexAnalysis } from "./RegimexAnalysis";
 
 const PAGE_SIZE = 50;
 const orderStatuses = {
@@ -112,6 +113,8 @@ export function SimulationMonitor({ token, instruments, simulation, run, onBack,
           <BalanceTable balances={results.balances} assetSymbol={assetSymbol} />
         </section>
       </> : !error && <p className="muted" role="status">Загрузка результатов…</p>}
+
+      <RegimexAnalysis key={`${run.id}:${status}`} simulationId={simulation.id} runId={run.id} token={token} />
 
       <section className="panel">
         <div className="panel-heading monitor-toolbar"><h2>Торговый инструмент</h2>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import "./App.css";
@@ -212,27 +212,41 @@ function Dashboard({
   const [assets, setAssets] = useState<Asset[]>([]);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [catalogError, setCatalogError] = useState("");
+  const catalogRequest = useRef<AbortController | null>(null);
+  const catalogActive = useRef(false);
 
-  const loadCatalog = useCallback(async () => {
-    try {
-      const [assetItems, instrumentItems] = await Promise.all([
-        apiRequest<Asset[]>("/api/assets"),
-        apiRequest<Instrument[]>("/api/instruments"),
-      ]);
-      setAssets(assetItems);
-      setInstruments(instrumentItems);
-      setCatalogError("");
-    } catch (requestError) {
-      setCatalogError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Не удалось загрузить справочник рынка",
-      );
-    }
+  const loadCatalog = useCallback(() => {
+    if (!catalogActive.current) return Promise.resolve();
+    catalogRequest.current?.abort();
+    const controller = new AbortController();
+    catalogRequest.current = controller;
+    return Promise.all([
+      apiRequest<Asset[]>("/api/assets", { signal: controller.signal }),
+      apiRequest<Instrument[]>("/api/instruments", { signal: controller.signal }),
+    ])
+      .then(([assetItems, instrumentItems]) => {
+        if (controller.signal.aborted) return;
+        setAssets(assetItems);
+        setInstruments(instrumentItems);
+        setCatalogError("");
+      })
+      .catch((requestError) => {
+        if (controller.signal.aborted) return;
+        setCatalogError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Не удалось загрузить справочник рынка",
+        );
+      });
   }, []);
 
   useEffect(() => {
+    catalogActive.current = true;
     void loadCatalog();
+    return () => {
+      catalogActive.current = false;
+      catalogRequest.current?.abort();
+    };
   }, [loadCatalog]);
 
   return (
@@ -349,38 +363,29 @@ export default function App() {
     localStorage.getItem(TOKEN_KEY),
   );
   const [user, setUser] = useState<User | null>(null);
-  const [restoring, setRestoring] = useState(Boolean(token));
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    let active = true;
-    if (!token) {
-      setRestoring(false);
-      return;
-    }
+    if (!token) return;
+    const controller = new AbortController();
 
-    apiRequest<User>("/api/auth/me", {}, token)
+    apiRequest<User>("/api/auth/me", { signal: controller.signal }, token)
       .then((currentUser) => {
-        if (active) {
+        if (!controller.signal.aborted) {
           setUser(currentUser);
           setNotice("");
         }
       })
       .catch(() => {
-        if (active) {
+        if (!controller.signal.aborted) {
           localStorage.removeItem(TOKEN_KEY);
           setToken(null);
           setUser(null);
           setNotice("Сессия завершена. Войдите снова.");
         }
-      })
-      .finally(() => {
-        if (active) setRestoring(false);
       });
 
-    return () => {
-      active = false;
-    };
+    return () => controller.abort();
   }, [token]);
 
   function logout() {
@@ -390,7 +395,7 @@ export default function App() {
     setNotice("");
   }
 
-  if (restoring) {
+  if (token && !user) {
     return (
       <div className="loading-screen">
         <div className="spinner" />

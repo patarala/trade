@@ -5,7 +5,7 @@ import copy
 import json
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from pydantic import SecretStr
@@ -78,6 +78,7 @@ class AnalysisPeer:
         self.calls, self.identities = [], []
         self.snapshot_override = {}
         self.result_override = {}
+        self.history_override = {}
         self.failure = None
 
     def connect(self, connection, *, subject, run_id):
@@ -114,6 +115,7 @@ class AnalysisPeer:
                 "resource_id": identifier,
                 "state": "queued",
                 "stage": "queued",
+                "created_at": "2026-01-01T12:00:00+00:00",
                 "failure": None,
                 "model": {
                     "model_version_id": "model-1",
@@ -173,6 +175,15 @@ class AnalysisPeer:
                 else [copy.deepcopy(self.analyses[self.latest_id])],
                 "limit": 1,
                 "offset": 0,
+            }
+        if path.startswith("/api/v1/integration/analyses?"):
+            query = parse_qs(urlsplit(path).query)
+            limit, offset = int(query["limit"][0]), int(query["offset"][0])
+            return {
+                "items": copy.deepcopy(list(reversed(self.analyses.values()))[offset:offset + limit]),
+                "limit": limit,
+                "offset": offset,
+                **self.history_override,
             }
         if (
             path == "/api/v1/integration/snapshots"
@@ -234,11 +245,11 @@ class RegimexGatewayTests(unittest.TestCase):
         app.dependency_overrides.clear()
         self.fixture.tearDown()
 
-    def request(self, method="GET", suffix="", payload=None, *, run_id=1, token=None, **options):
+    def request(self, method="GET", suffix="", payload=None, *, run_id=1, token=None, query="", **options):
         return asyncio.run(
             request_raw(
                 method,
-                f"{self.base}{suffix}?run_id={run_id}",
+                f"{self.base}{suffix}?run_id={run_id}{query}",
                 self.token if token is None else token,
                 payload,
                 **options,
@@ -288,11 +299,69 @@ class RegimexGatewayTests(unittest.TestCase):
         self.assertIn(b"Analysis report", content)
         self.assertTrue(all(identity == ("1", "1") for identity in self.peer.identities))
 
+    def test_history_pages_include_verified_model_dates_and_older_report_access(self):
+        identifiers = [self.peer.create_analysis()["analysis_id"] for _ in range(3)]
+        self.peer.complete(identifiers[0])
+        before = len(self.peer.calls)
+        status, headers, content = self.request(suffix="/analyses", query="&limit=2&offset=0")
+        self.assertEqual(status, 200, content)
+        page = json.loads(content)
+        self.assertEqual([item["analysis_id"] for item in page["items"]], identifiers[:0:-1])
+        self.assertEqual((page["limit"], page["offset"], page["has_more"]), (2, 0, True))
+        self.assertEqual(page["items"][0]["model_version_id"], "model-1")
+        self.assertEqual(page["items"][0]["created_at"], "2026-01-01T12:00:00+00:00")
+        self.assertIn(b"no-store", headers[b"cache-control"])
+        snapshot_calls = [call for call in self.peer.calls[before:] if "/snapshots/" in call[1]]
+        self.assertEqual(len(snapshot_calls), 1)
+        status, _, content = self.request(suffix="/analyses", query="&limit=2&offset=2")
+        self.assertEqual(status, 200)
+        page = json.loads(content)
+        self.assertEqual([item["analysis_id"] for item in page["items"]], identifiers[:1])
+        self.assertFalse(page["has_more"])
+        self.assertEqual(self.request(suffix=f"/analyses/{identifiers[0]}/report")[0], 200)
+
+    def test_history_rejects_wrong_bindings_duplicate_ids_and_invalid_pages(self):
+        item = self.peer.create_analysis()
+        for replacement in (
+            {"limit": 10}, {"offset": 1}, {"items": [item, item]},
+            {"items": [{**item, "run_id": "2"}]},
+            {"items": [{**item, "source_id": "other-source"}]},
+            {"items": [{**item, "job": {**item["job"], "created_at": "private diagnostic"}}]},
+            {"items": [{**item, "job": {**item["job"], "created_at": "2026-01-01T00:00:00"}}]},
+        ):
+            with self.subTest(replacement=replacement):
+                self.peer.history_override = replacement
+                status, _, content = self.request(suffix="/analyses")
+                self.assertEqual(status, 502, content)
+                self.assertNotIn(item["analysis_id"].encode(), content)
+                self.assertNotIn(b"private diagnostic", content)
+        self.peer.history_override = {}
+        self.peer.snapshot_override = {"content_sha256": "0" * 64}
+        self.assertEqual(self.request(suffix="/analyses")[0], 502)
+
+    def test_history_limits_are_checked_before_upstream_requests(self):
+        for query in ("&limit=0", "&limit=21", "&offset=-1", "&offset=10001", "&offset=invalid"):
+            with self.subTest(query=query):
+                self.assertEqual(self.request(suffix="/analyses", query=query)[0], 422)
+        self.assertEqual(self.peer.calls, [])
+
+    def test_link_resolves_only_the_requested_owned_run_without_calling_regimex(self):
+        with patch.object(routes.settings, "regimex_url", None):
+            status, headers, content = self.request(suffix="/run")
+        self.assertEqual(status, 200)
+        run = json.loads(content)
+        self.assertEqual((run["id"], run["simulation_id"], run["status"]), (1, 1, "completed"))
+        self.assertTrue(run["instrument_ids"])
+        self.assertIn(b"no-store", headers[b"cache-control"])
+        self.assertEqual(self.peer.calls, [])
+
     def test_every_route_checks_user_and_explicit_run_before_contacting_regimex(self):
         identifier = str(uuid4())
         for method, suffix, body in (
             ("GET", "", None),
             ("GET", "/export", None),
+            ("GET", "/run", None),
+            ("GET", "/analyses", None),
             ("POST", "/analyses", {}),
             ("GET", f"/analyses/{identifier}", None),
             ("GET", f"/analyses/{identifier}/report", None),

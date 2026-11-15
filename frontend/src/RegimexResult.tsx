@@ -16,24 +16,22 @@ const priceStateLabels = {
   no_execution: "Нет цены: не было сделок", unknown: "Цена неизвестна",
 };
 
-export function RegimexResult({ preview }: { preview: AnalysisPreview }) {
-  return <ResultContent key={preview.analysisId} preview={preview} />;
-}
-
-function ResultContent({ preview }: { preview: AnalysisPreview }) {
-  const [instrumentId, setInstrumentId] = useState(preview.instruments[0]?.id ?? "");
-  const instrument = preview.instruments.find((item) => item.id === instrumentId) ?? preview.instruments[0];
+export function RegimexResult({ preview, instrumentId, onInstrumentChange }: {
+  preview: AnalysisPreview; instrumentId: string | null; onInstrumentChange: (id: string) => void;
+}) {
+  const instrument = preview.instruments.find((item) => item.id === instrumentId);
   return <section className="regimex-result" aria-label="Классификация модели">
     <div className="regimex-result-heading">
       <p className="regimex-model">Предсказание модели · {preview.modelVersion}</p>
       <label>Инструмент анализа
-        <select aria-label="Инструмент анализа" value={instrument?.id ?? ""} onChange={(event) => setInstrumentId(event.target.value)}>
+        <select aria-label="Инструмент анализа" value={instrument?.id ?? ""} onChange={(event) => onInstrumentChange(event.target.value)}>
+          {!instrument && <option value="" disabled>Инструмент не найден</option>}
           {preview.instruments.map((item) => <option key={item.id} value={item.id}>{item.baseAsset}/{item.quoteAsset}</option>)}
         </select>
       </label>
     </div>
     {instrument ? <InstrumentResult key={instrument.id} instrument={instrument} />
-      : <p className="panel-note">В результате нет инструментов.</p>}
+      : <p className="form-error" role="alert">Инструмента из ссылки нет в этом анализе. Выберите доступный инструмент.</p>}
   </section>;
 }
 

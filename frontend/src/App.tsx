@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent } from "react";
 
 import "./App.css";
 import { AdminPanel } from "./AdminPanel";
 import { MarketCatalog } from "./MarketCatalog";
 import { SimulationsPanel } from "./SimulationsPanel";
+import { clearAnalysisLink, currentAnalysisLink, subscribeAnalysisLink } from "./regimexLink";
 import {
   apiRequest,
   type Asset,
@@ -208,7 +209,9 @@ function Dashboard({
   token: string;
   onLogout: () => void;
 }) {
-  const [section, setSection] = useState<DashboardSection>("experiments");
+  const [selectedSection, setSection] = useState<DashboardSection>("experiments");
+  const hash = useSyncExternalStore(subscribeAnalysisLink, currentAnalysisLink);
+  const section = hash && hash !== "#" ? "experiments" : selectedSection;
   const [assets, setAssets] = useState<Asset[]>([]);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [catalogError, setCatalogError] = useState("");
@@ -249,6 +252,11 @@ function Dashboard({
     };
   }, [loadCatalog]);
 
+  function openSection(next: DashboardSection) {
+    clearAnalysisLink();
+    setSection(next);
+  }
+
   return (
     <div className="dashboard">
       <header className="topbar">
@@ -261,23 +269,23 @@ function Dashboard({
           <NavButton
             active={section === "experiments"}
             label="Эксперименты"
-            onClick={() => setSection("experiments")}
+            onClick={() => openSection("experiments")}
           />
           <NavButton
             active={section === "market"}
             label="Инструменты"
-            onClick={() => setSection("market")}
+            onClick={() => openSection("market")}
           />
           <NavButton
             active={section === "profile"}
             label="Профиль"
-            onClick={() => setSection("profile")}
+            onClick={() => openSection("profile")}
           />
           {user.role === "admin" && (
             <NavButton
               active={section === "admin"}
               label="Администрирование"
-              onClick={() => setSection("admin")}
+              onClick={() => openSection("admin")}
             />
           )}
         </nav>

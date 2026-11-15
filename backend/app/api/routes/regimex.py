@@ -18,6 +18,7 @@ from backend.app.integrations.regimex.export import ExportError, build_export
 from backend.app.integrations.regimex.json import json_bytes, strict_json
 from backend.app.integrations.regimex.service import AnalysisGateway, public_view
 from backend.app.models import SimulationRun
+from backend.app.schemas.simulation_run import SimulationRunRead
 from backend.app.services.simulation_results import get_owned_run
 from backend.app.services.simulations import SimulationNotFoundError
 
@@ -176,6 +177,29 @@ def export_run(db: DbSession, owned: Owned) -> Response:
     run_id = owned.run.id
     export = _export(db, owned)
     return _attachment(json_bytes(export), "application/json", f"run-{run_id}-regimex.json")
+
+
+@router.get("/{simulation_id}/regimex/run")
+def linked_run(owned: Owned) -> JSONResponse:
+    """Resolve exactly one owned run for a saved analysis link."""
+    return JSONResponse(
+        SimulationRunRead.model_validate(owned.run).model_dump(mode="json"), headers=_HEADERS
+    )
+
+
+@router.get("/{simulation_id}/regimex/analyses")
+def history(
+    db: DbSession,
+    owned: Owned,
+    limit: Annotated[int, Query(ge=1, le=20)] = 10,
+    offset: Annotated[int, Query(ge=0, le=10000)] = 0,
+) -> JSONResponse:
+    run_id = owned.run.id
+    page = _gateway(db, owned).history(limit=limit, offset=offset)
+    return JSONResponse(
+        {**page, "items": [public_view(value, run_id) for value in page["items"]]},
+        headers=_HEADERS,
+    )
 
 
 async def retry_request(request: Request) -> str | None:

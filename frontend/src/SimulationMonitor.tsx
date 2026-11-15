@@ -9,6 +9,7 @@ import {
 import { decimalLabel, runStatusLabel } from "./simulationDisplay";
 import { useRequest } from "./useRequest";
 import { RegimexAnalysis } from "./RegimexAnalysis";
+import type { AnalysisLink } from "./regimexLink";
 
 const PAGE_SIZE = 50;
 const orderStatuses = {
@@ -21,11 +22,12 @@ type MonitorProps = {
   instruments: Instrument[];
   simulation: Simulation;
   run: SimulationRun;
+  analysisLink?: AnalysisLink;
   onBack: () => void;
   onRunChanged: (run: SimulationRun) => void;
 };
 
-export function SimulationMonitor({ token, instruments, simulation, run, onBack, onRunChanged }: MonitorProps) {
+export function SimulationMonitor({ token, instruments, simulation, run, analysisLink, onBack, onRunChanged }: MonitorProps) {
   const [instrumentId, setInstrumentId] = useState(run.instrument_ids[0]);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -114,7 +116,8 @@ export function SimulationMonitor({ token, instruments, simulation, run, onBack,
         </section>
       </> : !error && <p className="muted" role="status">Загрузка результатов…</p>}
 
-      <RegimexAnalysis key={`${run.id}:${status}`} simulationId={simulation.id} runId={run.id} token={token} />
+      <RegimexAnalysis key={`${run.id}:${status}`} simulationId={simulation.id} runId={run.id} token={token}
+        requestedAnalysisId={analysisLink?.analysisId} requestedInstrumentId={analysisLink?.instrumentId} />
 
       <section className="panel">
         <div className="panel-heading monitor-toolbar"><h2>Торговый инструмент</h2>

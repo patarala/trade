@@ -29,6 +29,13 @@
   margin-top: 0;
 }
 
+.regimex-history { margin-top: 16px; max-width: 720px; }
+.regimex-history label, .regimex-history select { min-width: 0; width: 100%; }
+.regimex-history-actions, .regimex-history-actions nav { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.regimex-history-actions { margin-top: 6px; justify-content: space-between; }
+.regimex-history-actions nav { font-size: 12px; color: var(--muted); }
+.regimex-analysis-link { color: var(--primary-dark); font-size: 14px; font-weight: 700; padding: 8px 0; }
+
 .auth-layout {
   min-height: 100vh;
   display: grid;

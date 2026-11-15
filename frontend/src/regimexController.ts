@@ -55,11 +55,13 @@ export class RegimexController {
   private active = false;
   private generation = 0;
   private pollCount = 0;
+  private selectedAnalysisId: string | null;
 
-  constructor(client: Client, saveFile = saveDownload, schedulePoll = schedule) {
+  constructor(client: Client, saveFile = saveDownload, schedulePoll = schedule, analysisId: string | null = null) {
     this.client = client;
     this.saveFile = saveFile;
     this.schedule = schedulePoll;
+    this.selectedAnalysisId = analysisId;
   }
 
   getSnapshot = (): AnalysisPanelState => this.state;
@@ -156,6 +158,11 @@ export class RegimexController {
     try {
       const status = await this.client.status(request.signal);
       if (!request.current()) return;
+      if (status.enabled && status.eligible && this.selectedAnalysisId
+        && status.analysis?.analysis_id !== this.selectedAnalysisId) {
+        status.analysis = await this.client.poll(this.selectedAnalysisId, request.signal);
+        if (!request.current()) return;
+      }
       const unresolved = uncertainMessage && (!status.analysis || ["failed", "cancelled"].includes(status.analysis.state));
       this.setStatus(status, { loading: false, confirmationRequired: false, error: unresolved ? uncertainMessage : "" });
       this.pollLater();
@@ -206,6 +213,7 @@ export class RegimexController {
       const analysis = await this.client.submit(retryOf, request.signal);
       if (!request.current()) return;
       this.pollCount = 0;
+      this.selectedAnalysisId = analysis.analysis_id;
       this.setStatus({ ...status, analysis }, { submitting: false, confirmationRequired: false });
       this.pollLater();
     } catch (cause) {
@@ -213,6 +221,7 @@ export class RegimexController {
       const uncertain = !(cause instanceof RegimexRequestError) || cause.status >= 500;
       this.update({ submitting: false, error: message(cause), confirmationRequired: uncertain });
       if (uncertain) {
+        this.selectedAnalysisId = null;
         // A lost POST response can still mean an accepted job. Read before another submission.
         await this.loadStatus("Подтверждение запуска не получено. Проверьте состояние перед повторной отправкой.");
       }

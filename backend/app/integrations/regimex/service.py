@@ -3,6 +3,7 @@
 import hashlib
 import math
 import re
+from datetime import datetime
 from uuid import UUID
 
 from .client import RegimexClient
@@ -87,6 +88,12 @@ def _analysis(value: dict, export: dict, expected: str | None = None) -> dict:
     model = job.get("model")
     _require(isinstance(model, dict) and isinstance(model.get("model_version_id"), str))
     _require(1 <= len(model["model_version_id"]) <= 128)
+    created_at = job.get("created_at")
+    _require(isinstance(created_at, str) and len(created_at) <= 64)
+    try:
+        _require(datetime.fromisoformat(created_at).utcoffset() is not None)
+    except ValueError:
+        raise invalid_response() from None
     for field in ("bundle_sha256", "inference_policy_sha256"):
         _require(
             isinstance(model.get(field), str)
@@ -116,6 +123,8 @@ def public_view(value: dict, run_id: int) -> dict:
         "run_id": run_id,
         "state": job["state"],
         "stage": job["stage"],
+        "model_version_id": job["model"]["model_version_id"],
+        "created_at": job["created_at"],
         "failure": None
         if failure is None
         else {
@@ -155,6 +164,35 @@ class AnalysisGateway:
             return None
         _require(isinstance(items[0], dict))
         return self._bound_value(items[0])
+
+    def history(self, *, limit: int, offset: int) -> dict:
+        _require(type(limit) is int and 1 <= limit <= 20)
+        _require(type(offset) is int and 0 <= offset <= 10000)
+        requested = limit + 1
+        page = self.client.json(
+            "GET", f"/api/v1/integration/analyses?limit={requested}&offset={offset}"
+        )
+        items = page.get("items")
+        _require(isinstance(items, list) and len(items) <= requested)
+        _require(type(page.get("limit")) is int and page["limit"] == requested)
+        _require(type(page.get("offset")) is int and page["offset"] == offset)
+        analyses, snapshots = set(), set()
+        for item in items:
+            _require(isinstance(item, dict))
+            _analysis(item, self.export)
+            identifier, snapshot_id = item["analysis_id"], item["snapshot_id"]
+            _require(identifier not in analyses)
+            analyses.add(identifier)
+            if snapshot_id not in snapshots:
+                snapshot = self.client.json(
+                    "GET", f"/api/v1/integration/snapshots/{snapshot_id}"
+                )
+                _require(_snapshot(snapshot, self.export) == snapshot_id)
+                snapshots.add(snapshot_id)
+        return {
+            "items": items[:limit], "limit": limit, "offset": offset,
+            "has_more": len(items) > limit,
+        }
 
     def submit(self, retry_of: str | None = None) -> dict:
         if retry_of is not None:

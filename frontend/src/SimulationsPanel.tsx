@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from "react";
 
 import { apiRequest, type Instrument, type Simulation, type SimulationRun } from "./api";
 import { SimulationForm } from "./SimulationForm";
 import { SimulationMonitor } from "./SimulationMonitor";
 import { newerRun, runStatusLabel } from "./simulationDisplay";
+import { clearAnalysisLink, currentAnalysisLink, parseAnalysisLink, subscribeAnalysisLink } from "./regimexLink";
+import type { AnalysisLink } from "./regimexLink";
+import { useRequest } from "./useRequest";
 
 
 export function SimulationsPanel({ token, instruments }: { token: string; instruments: Instrument[] }) {
+  const hash = useSyncExternalStore(subscribeAnalysisLink, currentAnalysisLink);
+  const destination = parseAnalysisLink(hash);
   const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [editing, setEditing] = useState<Simulation | null | "new">(null);
   const [monitoring, setMonitoring] = useState<{ simulation: Simulation; run: SimulationRun } | null>(null);
@@ -23,6 +28,7 @@ export function SimulationsPanel({ token, instruments }: { token: string; instru
   }, []);
 
   useEffect(() => {
+    if (hash && hash !== "#") return;
     const controller = new AbortController();
     async function load() {
       try {
@@ -41,7 +47,7 @@ export function SimulationsPanel({ token, instruments }: { token: string; instru
     }
     void load();
     return () => controller.abort();
-  }, [token, revision]);
+  }, [token, revision, hash]);
 
   function refreshList() {
     setLoading(true);
@@ -79,6 +85,20 @@ export function SimulationsPanel({ token, instruments }: { token: string; instru
     } catch (cause) { setError(message(cause)); }
     finally { setPending(false); }
   }
+
+  function backToExperiments() {
+    clearAnalysisLink();
+    setMonitoring(null);
+    refreshList();
+  }
+
+  if (destination.error) return <section className="panel" aria-label="Ссылка на анализ">
+    <p className="form-error" role="alert">{destination.error}</p>
+    <button className="secondary-button" onClick={backToExperiments} type="button">К экспериментам</button>
+  </section>;
+
+  if (destination.link) return <LinkedAnalysis key={`${destination.link.simulationId}:${destination.link.runId}`}
+    link={destination.link} token={token} instruments={instruments} back={backToExperiments} updateRun={updateRun} />;
 
   if (monitoring) return (
     <SimulationMonitor key={monitoring.run.id} token={token} instruments={instruments}
@@ -144,6 +164,34 @@ export function SimulationsPanel({ token, instruments }: { token: string; instru
       )}
     </section>
   );
+}
+
+function LinkedAnalysis({ link, token, instruments, back, updateRun }: {
+  link: AnalysisLink; token: string; instruments: Instrument[]; back: () => void;
+  updateRun: (run: SimulationRun) => void;
+}) {
+  const { simulationId, runId } = link;
+  const load = useCallback(async (signal: AbortSignal) => {
+    const [simulation, run] = await Promise.all([
+      apiRequest<Simulation>(`/api/simulations/${simulationId}`, { signal }, token),
+      apiRequest<SimulationRun>(`/api/simulations/${simulationId}/regimex/run?run_id=${runId}`, { signal }, token),
+    ]);
+    if (simulation.id !== simulationId || run.id !== runId || run.simulation_id !== simulationId) {
+      throw new Error("Ответ сервиса не соответствует запуску в ссылке.");
+    }
+    return { simulation, run };
+  }, [simulationId, runId, token]);
+  const { data, error, refresh } = useRequest(load);
+  if (data) return <SimulationMonitor token={token} instruments={instruments}
+    simulation={data.simulation} run={data.run} analysisLink={link} onBack={back} onRunChanged={updateRun} />;
+  return <section className="panel" aria-label="Ссылка на анализ">
+    {error ? <p className="form-error" role="alert">Не удалось открыть анализ: {error}</p>
+      : <p className="panel-note" role="status">Открываем анализ…</p>}
+    <div className="card-actions">
+      {error && <button className="secondary-button" onClick={refresh} type="button">Повторить</button>}
+      <button className="secondary-button" onClick={back} type="button">К экспериментам</button>
+    </div>
+  </section>;
 }
 
 function message(cause: unknown): string {

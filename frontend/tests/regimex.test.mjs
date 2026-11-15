@@ -27,6 +27,7 @@ const firstId = "00000000-0000-4000-8000-000000000001";
 const secondId = "00000000-0000-4000-8000-000000000002";
 const info = (state = "queued", id = firstId) => ({
   analysis_id: id, run_id: 7, state, stage: null, failure: null,
+  model_version_id: "tcn-test", created_at: "2026-01-01T12:00:00+00:00",
   result_available: state === "succeeded", report_available: state === "succeeded",
 });
 const status = (analysis = null) => ({ enabled: true, eligible: true, reason: null, analysis });
@@ -39,7 +40,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function panel(overrides = {}) {
+function panel(overrides = {}, analysisId = null) {
   const timers = [];
   const downloads = [];
   const client = {
@@ -54,7 +55,7 @@ function panel(overrides = {}) {
       const timer = { callback, delay, cancelled: false };
       timers.push(timer);
       return () => { timer.cancelled = true; };
-    });
+    }, analysisId);
   const next = () => timers.find((timer) => !timer.cancelled);
   return {
     controller, downloads, timers, next,
@@ -97,6 +98,53 @@ test("reopening completed analysis restores report without submitting another jo
   assert.equal(p.downloads[0].name, `regimex-${firstId}.html`);
   assert.equal(p.next(), undefined);
   p.controller.stop();
+});
+
+test("a saved older analysis stays selected during refresh and report downloads", async () => {
+  const polled = [], downloaded = [];
+  const p = panel({
+    status: async () => status(info("succeeded", secondId)),
+    poll: async (id) => { polled.push(id); return info("succeeded", id); },
+    download: async (_kind, id) => { downloaded.push(id); return new Blob(["saved report"]); },
+  }, firstId);
+  p.controller.start();
+  await settled();
+  assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
+  await p.controller.refresh();
+  await p.controller.download("report");
+  assert.deepEqual(polled, [firstId, firstId]);
+  assert.deepEqual(downloaded, [firstId]);
+  p.controller.stop();
+});
+
+test("an unavailable linked analysis fails explicitly without showing the latest result", async () => {
+  const p = panel({
+    status: async () => status(info("succeeded", secondId)),
+    poll: async () => { throw new RegimexRequestError("Analysis not found", 404); },
+  }, firstId);
+  p.controller.start();
+  await settled();
+  assert.equal(p.controller.getSnapshot().status, null);
+  assert.equal(p.controller.getSnapshot().preview, null);
+  assert.equal(p.controller.getSnapshot().error, "Analysis not found");
+  assert.equal(p.next(), undefined);
+  p.controller.stop();
+});
+
+test("leaving a saved analysis aborts its outstanding identity check", async () => {
+  const delayed = deferred();
+  let signal;
+  const p = panel({
+    status: async () => status(info("succeeded", secondId)),
+    poll: async (_id, value) => { signal = value; return delayed.promise; },
+  }, firstId);
+  p.controller.start();
+  await settled();
+  p.controller.stop();
+  delayed.resolve(info("succeeded", firstId));
+  await settled();
+  assert.equal(signal.aborted, true);
+  assert.equal(p.controller.getSnapshot().status, null);
 });
 
 test("lost submission response is recovered from server state before retry", async () => {
@@ -258,6 +306,27 @@ test("API rejects analysis from another run or unexpected analysis ID", async (t
   await assert.rejects(api.poll(firstId, new AbortController().signal), RegimexRequestError);
   globalThis.fetch = async () => Response.json(info("running", secondId));
   await assert.rejects(api.poll(firstId, new AbortController().signal), RegimexRequestError);
+});
+
+test("history pages are bounded and every item must belong to this run", async (t) => {
+  const calls = [];
+  let page = { items: [info("succeeded")], limit: 10, offset: 20, has_more: false };
+  t.mock.method(globalThis, "fetch", async (url) => { calls.push(url); return Response.json(page); });
+  const api = new RegimexApi(3, 7, "user-jwt"), signal = new AbortController().signal;
+  const result = await api.history(20, signal);
+  assert.equal(result.items[0].model_version_id, "tcn-test");
+  assert.equal(calls[0], "/api/simulations/3/regimex/analyses?limit=10&offset=20&run_id=7");
+  for (const offset of [-1, 10001, 0.5]) await assert.rejects(api.history(offset, signal));
+  assert.equal(calls.length, 1);
+  for (const invalid of [
+    { offset: 0 }, { limit: 11 }, { has_more: true },
+    { items: [info(), info()] }, { items: [{ ...info(), run_id: 999 }] },
+    { items: [{ ...info(), created_at: "not a date" }] },
+    { items: [{ ...info(), model_version_id: "" }] },
+  ]) {
+    page = { items: [info()], limit: 10, offset: 20, has_more: false, ...invalid };
+    await assert.rejects(api.history(20, signal), RegimexRequestError);
+  }
 });
 
 test("API preserves safe rate-limit errors and refuses oversized responses", async (t) => {

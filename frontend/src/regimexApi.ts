@@ -2,12 +2,18 @@ import { createAnalysisPreview, InvalidAnalysisPreview } from "./regimexResult";
 import type { AnalysisPreview } from "./regimexResult";
 
 export type AnalysisState = "queued" | "running" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
+export const analysisStateLabels: Record<AnalysisState, string> = {
+  queued: "В очереди", running: "Выполняется", cancel_requested: "Останавливается",
+  succeeded: "Готов", failed: "Ошибка анализа", cancelled: "Отменён",
+};
 
 export type Analysis = {
   analysis_id: string;
   run_id: number;
   state: AnalysisState;
   stage: string | null;
+  model_version_id: string;
+  created_at: string;
   failure: { code: string; message: string; retryable?: boolean } | null;
   result_available: boolean;
   report_available: boolean;
@@ -21,6 +27,7 @@ export type RegimexStatus = {
 };
 
 export type DownloadKind = "report" | "export";
+export type AnalysisHistory = { items: Analysis[]; limit: number; offset: number; has_more: boolean };
 
 const MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,6 +60,9 @@ function analysis(value: unknown, runId: number, expectedId?: string): Analysis 
     || (expectedId !== undefined && item.analysis_id !== expectedId)
     || item.run_id !== runId || !STATES.has(item.state as AnalysisState)
     || !(item.stage === null || typeof item.stage === "string")
+    || typeof item.model_version_id !== "string" || !item.model_version_id.length || item.model_version_id.length > 128
+    || typeof item.created_at !== "string" || item.created_at.length > 64 || !/(Z|[+-]\d{2}:\d{2})$/.test(item.created_at)
+    || !Number.isFinite(Date.parse(item.created_at))
     || typeof item.result_available !== "boolean" || typeof item.report_available !== "boolean") {
     throw invalidResponse();
   }
@@ -128,7 +138,7 @@ export class RegimexApi {
   private async request(suffix: string, signal: AbortSignal, body?: object): Promise<Response> {
     const headers = new Headers({ Authorization: `Bearer ${this.token}` });
     if (body !== undefined) headers.set("Content-Type", "application/json");
-    const response = await fetch(`${this.base}${suffix}?run_id=${this.runId}`, {
+    const response = await fetch(`${this.base}${suffix}${suffix.includes("?") ? "&" : "?"}run_id=${this.runId}`, {
       method: body === undefined ? "GET" : "POST",
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -170,6 +180,17 @@ export class RegimexApi {
   async poll(id: string, signal: AbortSignal): Promise<Analysis> {
     if (!UUID.test(id)) throw invalidResponse();
     return analysis(await this.json(`/analyses/${id}`, signal), this.runId, id);
+  }
+
+  async history(offset: number, signal: AbortSignal, limit = 10): Promise<AnalysisHistory> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw invalidResponse();
+    const value = object(await this.json(`/analyses?limit=${limit}&offset=${offset}`, signal));
+    if (!Array.isArray(value.items) || value.items.length > limit || value.limit !== limit || value.offset !== offset
+      || typeof value.has_more !== "boolean" || (value.has_more && value.items.length !== limit)) throw invalidResponse();
+    const items = value.items.map((item) => analysis(item, this.runId));
+    if (new Set(items.map((item) => item.analysis_id)).size !== items.length) throw invalidResponse();
+    return { items, limit, offset, has_more: value.has_more };
   }
 
   async submit(retryOf: string | null, signal: AbortSignal): Promise<Analysis> {

@@ -8,6 +8,7 @@ Regimex installation. This checks interoperability, not classification accuracy.
 """
 
 import hashlib
+import json
 import os
 import unittest
 from contextlib import ExitStack
@@ -44,9 +45,11 @@ class RegimexIntegrationTests(unittest.TestCase):
         from sqlalchemy import create_engine, func, select
         from sqlalchemy.orm import sessionmaker
 
+        from backend.app.api.routes import regimex as routes
         from backend.app.core.config import settings
         from backend.app.db.base import Base
         from backend.app.db.dependencies import get_db
+        from backend.app.integrations.regimex.bindings import VerifiedExports
         from backend.app.main import app
         from backend.app.models import Asset, Instrument, ParticipantBalance, User
         from backend.app.services.simulation_execution import process_next_run
@@ -57,6 +60,7 @@ class RegimexIntegrationTests(unittest.TestCase):
         trade_schema, regimex_schema = "trade_test_" + suffix, "regimex_trade_test_" + suffix
         with ExitStack() as stack:
             root = stack.enter_context(private_workspace())
+            stack.enter_context(patch.object(routes, "_verified_exports", VerifiedExports()))
             with psycopg.connect(dsn, autocommit=True) as connection:
                 connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(trade_schema)))
 
@@ -250,6 +254,22 @@ class RegimexIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(parsed_result.time_grid, export.time_grid)
                 self.assertEqual(parsed_result.instruments, export.instruments)
+                preview = browser.request("GET", analysis_path + "/preview" + query, token=alice)
+                self.assertEqual(preview.status, 200, preview.body[:200])
+                pair = preview.json()
+                self.assertEqual(set(pair), {"result", "input"})
+                self.assertEqual(pair["result"], result.json())
+                self.assertEqual(pair["input"], exported.json())
+                preview_export = parse_export_v2(json.dumps(pair["input"]).encode())
+                preview_result = AnalysisResult.model_validate_json(json.dumps(pair["result"]))
+                self.assertEqual(preview_result.snapshot_sha256, preview_export.content_sha256)
+                self.assertEqual(preview_result.source, preview_export.source)
+                self.assertEqual(preview_result.time_grid, preview_export.time_grid)
+                self.assertEqual(preview_result.instruments, preview_export.instruments)
+                self.assertEqual(str(preview_result.analysis_id), analysis_id)
+                self.assertLessEqual(len(preview.body), 16 * 1024**2)
+                self.assertEqual(preview.headers["content-type"], "application/json")
+                self.assertIn("no-store", preview.headers["cache-control"])
                 report = browser.request("GET", analysis_path + "/report" + query, token=alice)
                 self.assertEqual(report.status, 200, report.body[:200])
                 self.assertIn(b"<!doctype html", report.body.lower())
@@ -260,6 +280,7 @@ class RegimexIntegrationTests(unittest.TestCase):
                     path + "/export",
                     analysis_path,
                     analysis_path + "/result",
+                    analysis_path + "/preview",
                     analysis_path + "/report",
                 ):
                     self.assertEqual(browser.request("GET", endpoint + query).status, 401)
@@ -285,6 +306,12 @@ class RegimexIntegrationTests(unittest.TestCase):
                 self.assertEqual(
                     browser.request("GET", analysis_path + other_query, token=alice).status, 404
                 )
+                self.assertEqual(
+                    browser.request(
+                        "GET", analysis_path + "/preview" + other_query, token=alice
+                    ).status,
+                    404,
+                )
                 with factory.begin() as db:
                     db.get(User, alice_id).is_active = False
                 self.assertEqual(
@@ -294,7 +321,8 @@ class RegimexIntegrationTests(unittest.TestCase):
                     db.get(User, alice_id).is_active = True
 
             # A new HTTP server and new per-request gateway objects recover state
-            # from Regimex; no browser persistence or analysis-to-run cache is used.
+            # from Regimex after discarding the optional local export identities.
+            routes._verified_exports = VerifiedExports()
             with tcp_server(lambda origin: app) as (fresh_browser, _origin):
                 overview = fresh_browser.request("GET", path + query, token=alice)
                 self.assertEqual(overview.status, 200, overview.body)

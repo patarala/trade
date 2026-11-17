@@ -103,7 +103,9 @@ numbering as the interface. The files are generated locally from the already
 verified result and observation export; downloading them does not create an
 analysis or contact another service.
 
-The inline view uses the verified result JSON and observation export. It does not
+The inline view receives the verified result JSON and observation export together
+from one bounded preview endpoint. The backend builds the export once and checks
+the saved result against that exact export before returning the pair. It does not
 load report HTML into the simulator page. **Повторить загрузку** retries a failed
 preview request without creating a new analysis. **Скачать отчёт** still downloads
 the full interactive HTML report, which works offline. **Скачать данные** downloads
@@ -201,6 +203,29 @@ Excess requests fail immediately with `503`, code `analysis_busy`, and
 per-process capacity bound: multiple API processes each have their own allowance.
 Regimex's separate connection and subject rate limits still apply upstream.
 
+The browser serializes requests for one selected run, including history, previews
+and downloads, and holds its request slot until the response body is read. This
+supports a capacity of `1`. Its 45-second deadline includes queue waiting; queued
+requests are cancelled when the view closes. Other tabs and users may still reach
+the capacity bound. Cancelling a browser request cannot instantly stop a synchronous
+backend operation; a subsequent request can receive `503` with `Retry-After`.
+
+Status, overview and analysis-history reads reuse at most 128 verified export
+identities per backend process for 60 seconds. The cache stores only source, grid,
+instrument metadata and the local content digest, never observations or service
+credentials. Its key includes owner, connection origin, source namespace, exporter
+version, run identity, completion timestamps and frozen configuration/initial
+prices. Reads do not extend the lifetime. Each request still checks current user
+ownership and verifies remote snapshot identity and digest. Only a full local
+export followed by successful remote verification enters the cache. Expiration,
+restart or changed frozen metadata requires a fresh local export. Downloads,
+preview and submission always rebuild and verify the complete export.
+
+The simulator writes events only while holding a running run's lock; completed
+runs have no supported edit operation. Direct SQL editing of completed events is
+outside this contract and requires restarting the backend before further reads.
+The cache is an optimization, not persistent simulation or analysis history.
+
 Adapter transport diagnostics use fixed error categories and durations. They do
 not log credentials, request/response bodies, user identities or destination URLs.
 The optional connection's availability does not change the simulator's `/health`.
@@ -233,6 +258,7 @@ All routes require the simulator user's bearer token and an explicit positive
 | GET | `/regimex/analyses` | Saved analyses of this run, with `limit` (1–20) and `offset` (0–10000) |
 | POST | `/regimex/analyses` | Submit `{}` or retry with `{"retry_of":"ANALYSIS_UUID"}` |
 | GET | `/regimex/analyses/{analysis_id}` | Read the verified job state |
+| GET | `/regimex/analyses/{analysis_id}/preview` | Verified result and observations together, bounded to 16 MiB |
 | GET | `/regimex/analyses/{analysis_id}/result` | Download the verified result JSON |
 | GET | `/regimex/analyses/{analysis_id}/report` | Download the HTML report |
 
@@ -240,6 +266,10 @@ History returns `items`, `limit`, `offset` and `has_more`. Analysis views includ
 `model_version_id` and `created_at`. Every page retains the same owner/run/source
 and snapshot digest checks as individual downloads; an invalid upstream entry
 rejects the page rather than silently omitting that entry.
+
+Identifiers are limited to 128 Unicode code points, consistently in Python and
+the browser. UTF-16 code units and grapheme clusters are not used for this limit.
+The shared fixtures in `tests/contracts/identifiers.json` exercise both validators.
 
 Export download also works without a configured Regimex URL or key. Configure
 `REGIMEX_SOURCE_ID` to match the eventual receiving connection before exporting.
@@ -283,3 +313,28 @@ python -m unittest backend.tests.test_regimex_integration
 Without those opt-in settings, the integration test is explicitly skipped. It
 checks real simulator output, saved-model inference, report download, repeated
 submissions and access isolation. It is not a model-quality benchmark.
+
+
+### Browser acceptance
+
+The browser suite runs the production analysis component against isolated HTTP
+fixtures. It needs no database, simulator, Regimex process, model or private key:
+
+```sh
+npm --prefix frontend ci --ignore-scripts --no-audit --no-fund
+(cd frontend && npx playwright install chromium)
+npm --prefix frontend run test:browser
+```
+
+On a Linux CI host, use `npx playwright install --with-deps chromium` to install
+browser system libraries too. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can select an
+already installed compatible Chromium executable. Test output remains ignored.
+
+The checks cover saved links and history, one-request admission, linked chart
+cursors and zoom, price gaps, interval statistics, CSV/download controls, preview
+retry and a narrow viewport. They use artificial observations and responses: real
+owner isolation and digest rejection are checked separately by the backend tests;
+real model inference and offline report rendering remain integration checks.
+The test harness lives under `frontend/tests/browser` and is not a production
+build entry point. The **Regimex browser acceptance** workflow runs manually or on
+pull requests affecting the frontend/contracts; branch pushes do not trigger it.

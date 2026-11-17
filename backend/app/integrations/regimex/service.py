@@ -3,6 +3,7 @@
 import hashlib
 import math
 import re
+from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID
 
@@ -138,9 +139,16 @@ def public_view(value: dict, run_id: int) -> dict:
 
 
 class AnalysisGateway:
-    def __init__(self, client: RegimexClient, export: dict) -> None:
+    def __init__(
+        self, client: RegimexClient, export: dict, *, on_verified: Callable[[], None] | None = None
+    ) -> None:
         self.client = client
         self.export = export
+        self.on_verified = on_verified
+
+    def _verified(self) -> None:
+        if self.on_verified is not None:
+            self.on_verified()
 
     def bound(self, analysis_id: str) -> dict:
         identifier = _uuid(analysis_id)
@@ -152,6 +160,7 @@ class AnalysisGateway:
         identifier = value["snapshot_id"]
         snapshot = self.client.json("GET", f"/api/v1/integration/snapshots/{identifier}")
         _require(_snapshot(snapshot, self.export) == identifier)
+        self._verified()
         return value
 
     def latest(self) -> dict | None:
@@ -189,6 +198,8 @@ class AnalysisGateway:
                 )
                 _require(_snapshot(snapshot, self.export) == snapshot_id)
                 snapshots.add(snapshot_id)
+        if items:
+            self._verified()
         return {
             "items": items[:limit], "limit": limit, "offset": offset,
             "has_more": len(items) > limit,

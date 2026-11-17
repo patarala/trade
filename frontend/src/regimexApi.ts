@@ -60,7 +60,7 @@ function analysis(value: unknown, runId: number, expectedId?: string): Analysis 
     || (expectedId !== undefined && item.analysis_id !== expectedId)
     || item.run_id !== runId || !STATES.has(item.state as AnalysisState)
     || !(item.stage === null || typeof item.stage === "string")
-    || typeof item.model_version_id !== "string" || !item.model_version_id.length || item.model_version_id.length > 128
+    || typeof item.model_version_id !== "string" || !item.model_version_id.length || Array.from(item.model_version_id).length > 128
     || typeof item.created_at !== "string" || item.created_at.length > 64 || !/(Z|[+-]\d{2}:\d{2})$/.test(item.created_at)
     || !Number.isFinite(Date.parse(item.created_at))
     || typeof item.result_available !== "boolean" || typeof item.report_available !== "boolean") {
@@ -117,7 +117,7 @@ async function responseError(response: Response): Promise<RegimexRequestError> {
   } catch { /* An invalid error body must not replace the HTTP failure. */ }
   const header = response.headers.get("Retry-After");
   const retryAfter = header && /^\d+$/.test(header) ? Math.min(Number(header), 3600) : null;
-  if (response.status === 429 && retryAfter) message += ` Повторите через ${retryAfter} с.`;
+  if ([429, 503].includes(response.status) && retryAfter) message += ` Повторите через ${retryAfter} с.`;
   return new RegimexRequestError(message, response.status, retryAfter);
 }
 
@@ -126,6 +126,7 @@ export class RegimexApi {
   private simulationId: number;
   private runId: number;
   private token: string;
+  private pending: Promise<void> = Promise.resolve();
 
   constructor(simulationId: number, runId: number, token: string) {
     if (![simulationId, runId].every((id) => Number.isSafeInteger(id) && id > 0)) throw invalidResponse();
@@ -135,6 +136,35 @@ export class RegimexApi {
     this.token = token;
   }
 
+  /** Share one request slot across status, history, previews and downloads. */
+  private async scheduled<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    // The deadline includes time in the queue. A cancelled waiter must not let
+    // later requests overtake the request that still owns the slot.
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(45_000)]);
+    const previous = this.pending;
+    let release!: () => void;
+    const finished = new Promise<void>((resolve) => { release = resolve; });
+    this.pending = previous.then(() => finished);
+    try {
+      deadline.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(deadline.reason);
+        deadline.addEventListener("abort", abort, { once: true });
+        void previous.then(() => {
+          deadline.removeEventListener("abort", abort);
+          if (deadline.aborted) reject(deadline.reason);
+          else resolve();
+        });
+      });
+      deadline.throwIfAborted();
+      const value = await operation(deadline);
+      deadline.throwIfAborted();
+      return value;
+    } finally {
+      release();
+    }
+  }
+
   private async request(suffix: string, signal: AbortSignal, body?: object): Promise<Response> {
     const headers = new Headers({ Authorization: `Bearer ${this.token}` });
     if (body !== undefined) headers.set("Content-Type", "application/json");
@@ -142,7 +172,7 @@ export class RegimexApi {
       method: body === undefined ? "GET" : "POST",
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(45_000)]),
+      signal,
       cache: "no-store",
       redirect: "error",
       mode: "same-origin",
@@ -152,17 +182,19 @@ export class RegimexApi {
   }
 
   private async json(suffix: string, signal: AbortSignal, body?: object, limit = 128 * 1024): Promise<unknown> {
-    const response = await this.request(suffix, signal, body);
-    if (response.headers.get("Content-Type")?.split(";", 1)[0].trim() !== "application/json") {
-      await response.body?.cancel();
-      throw invalidResponse();
-    }
-    try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readBody(response, limit)));
-    } catch (cause) {
-      if (cause instanceof SyntaxError || cause instanceof TypeError) throw invalidResponse();
-      throw cause;
-    }
+    return this.scheduled(signal, async (requestSignal) => {
+      const response = await this.request(suffix, requestSignal, body);
+      if (response.headers.get("Content-Type")?.split(";", 1)[0].trim() !== "application/json") {
+        await response.body?.cancel();
+        throw invalidResponse();
+      }
+      try {
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readBody(response, limit)));
+      } catch (cause) {
+        if (cause instanceof SyntaxError || cause instanceof TypeError) throw invalidResponse();
+        throw cause;
+      }
+    });
   }
 
   async status(signal: AbortSignal): Promise<RegimexStatus> {
@@ -200,19 +232,13 @@ export class RegimexApi {
 
   async preview(id: string, signal: AbortSignal): Promise<AnalysisPreview> {
     if (!UUID.test(id)) throw invalidResponse();
-    const pending = new AbortController();
-    const requestSignal = AbortSignal.any([signal, pending.signal]);
     try {
-      const [result, input] = await Promise.all([
-        this.json(`/analyses/${id}/result`, requestSignal, undefined, MAX_DOWNLOAD_BYTES),
-        this.json("/export", requestSignal, undefined, MAX_DOWNLOAD_BYTES),
-      ]);
-      requestSignal.throwIfAborted();
-      return createAnalysisPreview(result, input, {
+      const value = object(await this.json(`/analyses/${id}/preview`, signal, undefined, MAX_DOWNLOAD_BYTES));
+      signal.throwIfAborted();
+      return createAnalysisPreview(value.result, value.input, {
         analysisId: id, simulationId: this.simulationId, runId: this.runId,
       });
     } catch (cause) {
-      pending.abort();
       if (cause instanceof InvalidAnalysisPreview) throw new RegimexRequestError(cause.message, 502);
       throw cause;
     }
@@ -221,14 +247,17 @@ export class RegimexApi {
   async download(kind: DownloadKind, id: string | null, signal: AbortSignal): Promise<Blob> {
     if (kind === "report" && (!id || !UUID.test(id))) throw invalidResponse();
     const suffix = kind === "export" ? "/export" : `/analyses/${id}/report`;
-    const response = await this.request(suffix, signal);
-    const expected = kind === "export" ? "application/json" : "text/html";
-    if (response.headers.get("Content-Type")?.split(";", 1)[0].trim() !== expected) {
-      await response.body?.cancel();
-      throw invalidResponse();
-    }
-    return new Blob([await readBody(response, MAX_DOWNLOAD_BYTES)], { type: expected });
+    return this.scheduled(signal, async (requestSignal) => {
+      const response = await this.request(suffix, requestSignal);
+      const expected = kind === "export" ? "application/json" : "text/html";
+      if (response.headers.get("Content-Type")?.split(";", 1)[0].trim() !== expected) {
+        await response.body?.cancel();
+        throw invalidResponse();
+      }
+      return new Blob([await readBody(response, MAX_DOWNLOAD_BYTES)], { type: expected });
+    });
   }
+
 }
 
 export function saveDownload(blob: Blob, filename: string): void {

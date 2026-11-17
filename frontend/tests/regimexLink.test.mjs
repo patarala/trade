@@ -36,3 +36,12 @@ test("invalid or ambiguous links are errors rather than alternate navigation", (
   assert.deepEqual(parseAnalysisLink(""), { link: null, error: null });
   assert.deepEqual(parseAnalysisLink("#"), { link: null, error: null });
 });
+
+test("saved links preserve the shared Unicode identifier boundary after URL encoding", async () => {
+  const fixtures = JSON.parse(await readFile(new URL("../../tests/contracts/identifiers.json", import.meta.url), "utf8"));
+  for (const fixture of fixtures) {
+    const value = { simulationId: 3, runId: 7, analysisId, instrumentId: fixture.value };
+    if (fixture.valid) assert.deepEqual(parseAnalysisLink(analysisLink(value)).link, value, fixture.name);
+    else assert.throws(() => analysisLink(value), undefined, fixture.name);
+  }
+});

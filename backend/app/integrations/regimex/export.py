@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import Order, SimulationRun, SimulationRunInstrument, Trade
 
+EXPORTER_VERSION = "1"
 MAX_STEPS = 4096
 MAX_EXPORT_BYTES = 16 * 1024 * 1024
 MAX_COUNT = 2**31 - 1
@@ -278,7 +279,7 @@ def build_export(db: Session, run: SimulationRun, source_id: str) -> dict[str, o
             "run_status": "completed",
             "consistency": "atomic_completed_snapshot",
         },
-        "producer": {"name": "trade-regimex-export", "version": "1"},
+        "producer": {"name": "trade-regimex-export", "version": EXPORTER_VERSION},
         "time_grid": {
             "origin": 0.0,
             "unit": "simulation_step",

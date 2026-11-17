@@ -96,7 +96,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function identifier(value: unknown): string {
-  requireValue(typeof value === "string" && value.length > 0 && value.length <= 128);
+  requireValue(typeof value === "string" && value.length > 0 && Array.from(value).length <= 128);
   return value;
 }
 

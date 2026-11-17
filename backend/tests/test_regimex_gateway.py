@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -13,6 +14,7 @@ from pydantic import SecretStr
 from backend.app.api.routes import regimex as routes
 from backend.app.core.security import create_access_token
 from backend.app.db.dependencies import get_db
+from backend.app.integrations.regimex.bindings import VerifiedExports
 from backend.app.integrations.regimex.client import UpstreamResponse
 from backend.app.integrations.regimex.errors import GatewayError
 from backend.app.integrations.regimex.export import build_export
@@ -230,6 +232,7 @@ class RegimexGatewayTests(unittest.TestCase):
         app.dependency_overrides[get_db] = test_db
         self.token, self.other_token = create_access_token("1"), create_access_token("2")
         self.patches = [
+            patch.object(routes, "_verified_exports", VerifiedExports()),
             patch.object(routes.settings, "regimex_url", "http://127.0.0.1:8010"),
             patch.object(routes.settings, "regimex_token", SecretStr("private-regimex-token")),
             patch.object(routes.settings, "regimex_source_id", "trade-test"),
@@ -366,6 +369,7 @@ class RegimexGatewayTests(unittest.TestCase):
             ("GET", f"/analyses/{identifier}", None),
             ("GET", f"/analyses/{identifier}/report", None),
             ("GET", f"/analyses/{identifier}/result", None),
+            ("GET", f"/analyses/{identifier}/preview", None),
         ):
             with self.subTest(method=method, suffix=suffix):
                 self.assertEqual(self.request(method, suffix, body, token=self.other_token)[0], 404)
@@ -393,12 +397,14 @@ class RegimexGatewayTests(unittest.TestCase):
 
     def test_revoked_user_cannot_poll_or_download_an_existing_analysis(self):
         first = self.submit()
+        self.assertEqual(self.request(suffix=f"/analyses/{first['analysis_id']}")[0], 200)
         user = self.fixture.db.get(User, 1)
         user.is_active = False
         self.fixture.db.commit()
         before = len(self.peer.calls)
         self.assertEqual(self.request(suffix=f"/analyses/{first['analysis_id']}")[0], 401)
         self.assertEqual(self.request(suffix=f"/analyses/{first['analysis_id']}/report")[0], 401)
+        self.assertEqual(self.request(suffix=f"/analyses/{first['analysis_id']}/preview")[0], 401)
         self.assertEqual(len(self.peer.calls), before)
 
     def test_wrong_snapshot_or_run_never_releases_a_report(self):
@@ -578,3 +584,95 @@ class RegimexGatewayTests(unittest.TestCase):
             request_raw("GET", "/api/simulations/1/results?run_id=1", self.token)
         )
         self.assertEqual(ordinary[0], 200)
+
+
+    def test_preview_builds_one_export_and_preserves_verified_identity(self):
+        analysis = self.submit()
+        identifier = analysis["analysis_id"]
+        self.peer.complete(identifier)
+        with patch.object(routes, "build_export", wraps=build_export) as build:
+            status, headers, content = self.request(suffix=f"/analyses/{identifier}/preview")
+        self.assertEqual(status, 200, content)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(json.loads(content), {"result": self.peer.result(identifier), "input": self.export})
+        self.assertEqual(headers[b"content-type"], b"application/json")
+        self.assertIn(b"no-store", headers[b"cache-control"])
+        self.assertEqual(self.request(suffix=f"/analyses/{identifier}/preview", token=self.other_token)[0], 404)
+        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        self.assertEqual(self.request(suffix=f"/analyses/{identifier}/preview")[0], 502)
+
+    def test_preview_bounds_combined_response_before_publication(self):
+        identifier = self.submit()["analysis_id"]
+        self.peer.complete(identifier)
+        with patch.object(routes, "_MAX_PREVIEW_BYTES", 16):
+            status, _, content = self.request(suffix=f"/analyses/{identifier}/preview")
+        self.assertEqual(status, 413)
+        self.assertEqual(json.loads(content)["code"], "preview_too_large")
+
+    def test_metadata_reads_reuse_one_verified_digest_but_downloads_rebuild(self):
+        identifier = self.submit()["analysis_id"]
+        self.peer.complete(identifier)
+        with patch.object(routes, "build_export", wraps=build_export) as build:
+            for suffix in ("", "/analyses", f"/analyses/{identifier}", f"/analyses/{identifier}"):
+                self.assertEqual(self.request(suffix=suffix)[0], 200)
+            self.assertEqual(build.call_count, 1)
+            for suffix in (f"/analyses/{identifier}/preview", f"/analyses/{identifier}/result",
+                           f"/analyses/{identifier}/report", "/export"):
+                self.assertEqual(self.request(suffix=suffix)[0], 200)
+            self.assertEqual(build.call_count, 5)
+        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        for suffix in ("", "/analyses", f"/analyses/{identifier}"):
+            self.assertEqual(self.request(suffix=suffix)[0], 502)
+        self.assertEqual(self.request(suffix=f"/analyses/{identifier}", token=self.other_token)[0], 404)
+
+    def test_failed_remote_binding_is_not_cached(self):
+        identifier = self.submit()["analysis_id"]
+        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        with patch.object(routes, "build_export", wraps=build_export) as build:
+            for _ in range(2):
+                self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 502)
+            self.assertEqual(build.call_count, 2)
+
+    def test_model_identifiers_follow_shared_unicode_code_point_contract(self):
+        identifier = self.submit()["analysis_id"]
+        fixtures = json.loads((Path(__file__).parents[2] / "tests/contracts/identifiers.json").read_text())
+        for fixture in fixtures:
+            with self.subTest(fixture["name"]):
+                self.peer.analyses[identifier]["job"]["model"]["model_version_id"] = fixture["value"]
+                status, _, content = self.request(suffix=f"/analyses/{identifier}")
+                self.assertEqual(status, 200 if fixture["valid"] else 502, content)
+
+    def test_cached_digest_expires_and_changed_run_metadata_forces_validation(self):
+        now = [0.0]
+        identifier = self.submit()["analysis_id"]
+        with (
+            patch.object(routes, "_verified_exports", VerifiedExports(clock=lambda: now[0])),
+            patch.object(routes, "build_export", wraps=build_export) as build,
+        ):
+            self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 200)
+            now[0] = 59
+            self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 200)
+            self.assertEqual(build.call_count, 1)
+            now[0] = 60
+            self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 200)
+            self.assertEqual(build.call_count, 2)
+            run = self.fixture.fixture.run
+            run.engine_version = "unsupported"
+            self.fixture.db.commit()
+            self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 422)
+            self.assertEqual(build.call_count, 3)
+
+
+    def test_changed_source_or_frozen_price_cannot_reuse_cached_identity(self):
+        identifier = self.submit()["analysis_id"]
+        self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 200)
+        with patch.object(routes, "build_export", wraps=build_export) as build:
+            with patch.object(routes.settings, "regimex_source_id", "different-source"):
+                self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 502)
+            self.assertEqual(build.call_count, 1)
+            # Even an unsupported direct frozen-metadata edit invalidates the key.
+            market = self.fixture.fixture.run.instruments[0]
+            market.initial_price += 1
+            self.fixture.db.commit()
+            self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 502)
+            self.assertEqual(build.call_count, 2)

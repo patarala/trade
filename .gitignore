@@ -17,3 +17,7 @@ dist/
 
 # IDE
 .vscode/
+
+# Browser acceptance output
+/frontend/test-results/
+/frontend/playwright-report/

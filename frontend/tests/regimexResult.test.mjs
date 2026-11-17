@@ -199,3 +199,14 @@ test("classification must cover the entire original grid with valid availability
     assert.throws(() => project(payloads), InvalidAnalysisPreview, change.toString());
   }
 });
+
+
+test("preview model identifiers accept exactly the shared Unicode code-point contract", async () => {
+  const cases = JSON.parse(await readFile(new URL("../../tests/contracts/identifiers.json", import.meta.url), "utf8"));
+  for (const fixture of cases) {
+    const payloads = previewPayloads();
+    payloads.result.model.model_version_id = fixture.value;
+    if (fixture.valid) assert.equal(project(payloads).modelVersion, fixture.value, fixture.name);
+    else assert.throws(() => project(payloads), InvalidAnalysisPreview, fixture.name);
+  }
+});

@@ -11,7 +11,7 @@ const invalid = "Ссылка на анализ некорректна.";
 /** The fragment carries resource identities only; authorization stays in HTTP headers. */
 export function parseAnalysisLink(hash: string): { link: AnalysisLink | null; error: string | null } {
   if (!hash || hash === "#") return { link: null, error: null };
-  if (hash.length > 1024) return { link: null, error: invalid };
+  if (hash.length > 2048) return { link: null, error: invalid };
   const match = /^#\/simulations\/([1-9]\d*)\/runs\/([1-9]\d*)\/analyses\/([^?]+)(?:\?(.*))?$/.exec(hash);
   if (!match || !UUID.test(match[3])) return { link: null, error: invalid };
   const simulationId = Number(match[1]), runId = Number(match[2]);
@@ -19,7 +19,7 @@ export function parseAnalysisLink(hash: string): { link: AnalysisLink | null; er
   const instrumentId = query.get("instrument");
   if (![simulationId, runId].every(Number.isSafeInteger)
     || [...query.keys()].some((key) => key !== "instrument") || query.getAll("instrument").length > 1
-    || (instrumentId !== null && (!instrumentId.length || instrumentId.length > 128))) {
+    || (instrumentId !== null && (!instrumentId.length || Array.from(instrumentId).length > 128))) {
     return { link: null, error: invalid };
   }
   return { link: { simulationId, runId, analysisId: match[3].toLowerCase(), instrumentId }, error: null };

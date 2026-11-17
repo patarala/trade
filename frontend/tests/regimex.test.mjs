@@ -486,14 +486,13 @@ test("preview API accepts full-size native runs and fetches only bound JSON endp
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push({ url, options });
-    return Response.json(url.includes("/result?") ? payloads.result : payloads.input);
+    return Response.json(payloads);
   });
   const result = await new RegimexApi(3, 7, "user-jwt").preview(firstId, new AbortController().signal);
   assert.equal(result.instruments.length, 2);
   assert.equal(result.instruments[1].steps.length, 4096);
   assert.deepEqual(calls.map((call) => call.url).sort(), [
-    `/api/simulations/3/regimex/analyses/${firstId}/result?run_id=7`,
-    "/api/simulations/3/regimex/export?run_id=7",
+    `/api/simulations/3/regimex/analyses/${firstId}/preview?run_id=7`,
   ].sort());
   for (const { options } of calls) {
     assert.equal(options.method, "GET");
@@ -506,48 +505,112 @@ test("preview API accepts full-size native runs and fetches only bound JSON endp
 test("preview API refuses mismatched content and never falls back to an HTML response", async (t) => {
   const payloads = previewPayloads();
   payloads.result.snapshot_sha256 = "f".repeat(64);
-  t.mock.method(globalThis, "fetch", async (url) => Response.json(
-    url.includes("/result?") ? payloads.result : payloads.input,
-  ));
+  t.mock.method(globalThis, "fetch", async () => Response.json(payloads));
   const api = new RegimexApi(3, 7, "user-jwt");
   await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
   globalThis.fetch = async () => new Response("<h1>Unexpected report</h1>", { headers: { "Content-Type": "text/html" } });
   await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
 });
 
-test("each preview input has a 16 MiB streaming cap and failure aborts its sibling request", async (t) => {
-  for (const oversized of ["result", "export"]) await t.test(oversized, async (caseTest) => {
-    const payloads = previewPayloads();
-    const signals = [];
-    let cancelled = false;
-    caseTest.mock.method(globalThis, "fetch", async (url, options) => {
-      signals.push(options.signal);
-      const kind = url.includes("/result?") ? "result" : "export";
-      if (kind !== oversized) return Response.json(kind === "result" ? payloads.result : payloads.input);
-      return new Response(new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(16 * 1024 * 1024));
-          controller.enqueue(new Uint8Array(1));
-        },
-        cancel() { cancelled = true; },
-      }), { headers: { "Content-Type": "application/json" } });
-    });
-    const api = new RegimexApi(3, 7, "user-jwt");
-    await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
-    assert.equal(cancelled, true);
-    assert.ok(signals.every((signal) => signal.aborted));
-  });
+test("combined preview has a 16 MiB streaming cap and cancels an oversized body", async (t) => {
+  let cancelled = false;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(16 * 1024 * 1024));
+      controller.enqueue(new Uint8Array(1));
+    },
+    cancel() { cancelled = true; },
+  }), { headers: { "Content-Type": "application/json" } }));
+  const api = new RegimexApi(3, 7, "user-jwt");
+  await assert.rejects(api.preview(firstId, new AbortController().signal), RegimexRequestError);
+  assert.equal(cancelled, true);
 });
 
 test("preview abort is honored even when a transport supplies a late complete response", async (t) => {
   const payloads = previewPayloads(), delayed = deferred();
   t.mock.method(globalThis, "fetch", async (url) => {
     await delayed.promise;
-    return Response.json(url.includes("/result?") ? payloads.result : payloads.input);
+    return Response.json(payloads);
   });
   const controller = new AbortController();
   const pending = new RegimexApi(3, 7, "user-jwt").preview(firstId, controller.signal);
   controller.abort();
   delayed.resolve();
   await assert.rejects(pending, { name: "AbortError" });
+});
+
+
+test("one API serializes overview, history, preview and downloads through body completion", async (t) => {
+  const payloads = previewPayloads(), held = deferred(), firstRead = deferred();
+  let active = 0, peak = 0;
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    calls.push(url);
+    const payload = url.includes("/preview?") ? payloads : url.includes("limit=")
+      ? { items: [info("succeeded")], limit: 10, offset: 0, has_more: false } : status(info("succeeded"));
+    return new Response(new ReadableStream({
+      async start(controller) {
+        if (calls.length === 1) { firstRead.resolve(); await held.promise; }
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
+        active -= 1;
+        controller.close();
+      },
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+  const api = new RegimexApi(3, 7, "jwt"), signal = new AbortController().signal;
+  const requests = [api.status(signal), api.history(0, signal), api.preview(firstId, signal), api.download("export", null, signal)];
+  await firstRead.promise;
+  await settled();
+  assert.equal(calls.length, 1, "headers alone must not release the request slot");
+  held.resolve();
+  const values = await Promise.all(requests);
+  assert.equal(peak, 1);
+  assert.equal(values[2].instruments.length, 2);
+  assert.equal(calls.length, 4);
+});
+
+test("aborting a queued history request neither sends it nor overtakes the active request", async (t) => {
+  const held = deferred();
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(url);
+    if (calls.length === 1) await held.promise;
+    return Response.json(status());
+  });
+  const api = new RegimexApi(3, 7, "jwt"), lifetime = new AbortController(), cancelled = new AbortController();
+  const first = api.status(lifetime.signal);
+  await settled();
+  const second = api.history(0, cancelled.signal);
+  cancelled.abort();
+  const third = api.status(lifetime.signal);
+  await assert.rejects(second, { name: "AbortError" });
+  await settled();
+  assert.equal(calls.length, 1);
+  held.resolve();
+  await Promise.all([first, third]);
+  assert.equal(calls.length, 2);
+});
+
+test("model identifiers follow the shared Unicode code-point contract", async (t) => {
+  const cases = JSON.parse(await readFile(new URL("../../tests/contracts/identifiers.json", import.meta.url), "utf8"));
+  for (const fixture of cases) {
+    const value = info("succeeded");
+    value.model_version_id = fixture.value;
+    t.mock.method(globalThis, "fetch", async () => Response.json(status(value)));
+    const pending = new RegimexApi(3, 7, "jwt").status(new AbortController().signal);
+    if (fixture.valid) assert.equal((await pending).analysis.model_version_id, fixture.value, fixture.name);
+    else await assert.rejects(pending, RegimexRequestError, fixture.name);
+  }
+});
+
+
+test("capacity rejection keeps Retry-After visible after an aborted server operation", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json(
+    { detail: "Analysis capacity is busy", code: "analysis_busy", retryable: true },
+    { status: 503, headers: { "Retry-After": "2" } },
+  ));
+  await assert.rejects(new RegimexApi(3, 7, "jwt").history(0, new AbortController().signal),
+    (error) => error.status === 503 && error.retryAfter === 2 && error.message.includes("2 с."));
 });

@@ -191,8 +191,7 @@ function summarize(rows: PreviewObservation[], interval: IntervalBounds): Interv
   const selected = rows.slice(interval.start, interval.stop);
   const prices = selected.flatMap((row) => row.lastPrice === null ? [] : [{ step: row.step, price: row.lastPrice }]);
   const first = prices[0], last = prices.at(-1);
-  // Match the report: compare available prices without filling absent endpoints.
-  // A single available price provides no measured change, even if carried.
+  // One available price gives no basis for measuring change.
   const priceChangePercent = first && last && first.step !== last.step
     ? 100 * (last.price / first.price - 1) : null;
   requireValue(priceChangePercent === null || Number.isFinite(priceChangePercent));
@@ -200,7 +199,6 @@ function summarize(rows: PreviewObservation[], interval: IntervalBounds): Interv
   const inactiveSteps = known.filter((count) => count === 0).length;
   return {
     priceChangePercent, firstPriceStep: first?.step ?? null, lastPriceStep: last?.step ?? null,
-    // Never label a known-only partial sum as the interval's complete total.
     tradeCount: known.length === selected.length ? known.reduce((sum, count) => sum + count, 0) : null,
     inactiveStepShare: known.length ? inactiveSteps / known.length : null,
     inactiveSteps, activityObservedSteps: known.length, stepCount: selected.length,
@@ -212,10 +210,9 @@ export function createAnalysisPreview(resultValue: unknown, exportValue: unknown
   requireValue(input.schema_version === "2.1" && result.result_version === "2.0");
   requireValue(UUID.test(expected.analysisId) && result.analysis_id === expected.analysisId
     && typeof result.snapshot_id === "string" && UUID.test(result.snapshot_id));
+  // The gateway hashes the export. Reserializing it here can turn 1.0 into 1.
   requireValue(typeof input.content_sha256 === "string" && DIGEST.test(input.content_sha256)
     && result.snapshot_sha256 === input.content_sha256);
-  // The gateway verifies the canonical digest. JSON numbers cannot be faithfully
-  // reserialized to Python's canonical representation in a browser.
   const source = object(input.source);
   for (const key of ["source_id", "source_version", "configuration_id", "run_id", "snapshot_id", "state_revision"]) {
     identifier(source[key]);

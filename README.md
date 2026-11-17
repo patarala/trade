@@ -3,15 +3,12 @@
 Web-система имитационного моделирования биржевой торговли
 для тестирования торговых стратегий.
 
-## Optional Regimex analysis
+## Анализ результатов в Regimex
 
-This fork can send a completed run to Regimex for market-regime analysis and show
-its classification alongside the simulator's results. Downloadable reports also
-work offline. The connection is disabled by default. See [setup and usage](docs/regimex.md)
-for backend configuration, export semantics and integration tests.
-For an isolated local stack with both services, workers and PostgreSQL, use the
-[local runner](docs/regimex-local.md). It accepts a trusted Regimex checkout and
-saved model bundle and starts the complete stack with one command.
+Regimex показывает участки роста, снижения и бокового движения цены в результатах
+завершённого запуска. Для локального запуска обоих сервисов с готовой моделью
+следуйте [инструкции по запуску](docs/regimex-local.md). Если Regimex уже работает,
+откройте [руководство по подключению и анализу](docs/regimex.md).
 
 ## Структура
 

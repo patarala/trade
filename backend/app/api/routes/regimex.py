@@ -99,8 +99,7 @@ def _export(db: DbSession, owned: OwnedRun) -> dict:
         result = build_export(db, owned.run, settings.regimex_source_id)
     except ExportError as error:
         raise GatewayError("export_unavailable", str(error), 422) from None
-    # No gateway operation writes to the simulator. Release the snapshot read
-    # lock before making bounded network calls; the completed run is immutable.
+    # End the read transaction so network calls do not hold the completed run's lock.
     db.rollback()
     return result
 
@@ -132,8 +131,7 @@ def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> 
         export = _export(db, owned)
     else:
         db.rollback()
-    # Only a full local digest followed by a verified remote snapshot may enter
-    # the cache. Polling never renews a cached identity's expiration time.
+    # Cache a freshly built export's identity only after Regimex confirms the snapshot.
     remember = (
         (lambda: _verified_exports.remember(key, export))
         if key is not None and not cached else None

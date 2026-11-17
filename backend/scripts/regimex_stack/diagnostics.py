@@ -1,4 +1,4 @@
-"""Use the existing credential-free connection diagnostic with this stack's key."""
+"""Run the Trade connection check with the local stack's backend credentials."""
 
 import json
 import subprocess

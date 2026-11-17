@@ -1,26 +1,22 @@
 # Run Trade and Regimex locally
 
-The optional local runner starts the browser interface, simulator API and workers,
-Regimex API and workers, and a separate PostgreSQL cluster. It keeps this stack's
-databases and credentials apart from other installations. All listeners use
-`127.0.0.1`; this is a local development and demonstration environment.
+The local runner starts both applications, their workers and a private
+PostgreSQL cluster on `127.0.0.1`. It creates a Trade account and registers
+the saved model you supply.
 
 ## Requirements
 
-- Linux or WSL, running as an ordinary user.
-- Python 3.14.4 and uv 0.13.0.
-- Node.js 24.22.3 with npm.
-- PostgreSQL 16 binaries, including `postgres` and `initdb`.
-- A trusted Regimex checkout and saved model bundle with its expected manifest
-  SHA-256 digest. The runner does not train or download a model.
+Use Linux or WSL as a regular user. Install Node.js 24 with npm, PostgreSQL 16
+and the uv version pinned in the Regimex checkout's `pyproject.toml` (0.13.0).
+uv uses the Python version in that checkout's `.python-version`. Allow access
+to the package registries on the first run to install the locked dependencies.
 
-The first run installs locked Python and frontend dependencies, so it needs access
-to their package registries. Docker is not required. The existing database-only
-Compose configuration and ordinary simulator setup remain available separately.
+You need a trusted Regimex checkout, a saved model bundle and the expected
+SHA-256 digest of the bundle's `manifest.json`.
 
 ## Start
 
-From the Trade checkout, supply the paths and digest for your Regimex installation:
+Run this from the Trade checkout, replacing the paths and manifest digest.
 
 ```sh
 python3 -m backend.scripts.run_regimex \
@@ -30,66 +26,48 @@ python3 -m backend.scripts.run_regimex \
   --demo mixed
 ```
 
-If PostgreSQL tools are not on `PATH`, add `--postgres-bin /path/to/postgresql/bin`.
-Use `--check` with the same arguments to validate prerequisites and the manifest
-without starting services. `--demo` is optional; available examples are `growth`,
-`decline`, `mixed` and `reversal`. They use constant simulator strategies and
-deterministic seeds. Their names describe illustrative scenarios, not reference
-labels or guaranteed predictions for every model.
+If `postgres` and `initdb` are outside your `PATH`, add
+`--postgres-bin /path/to/postgresql/bin`. To check inputs, the manifest
+digest and port availability before installing dependencies, add `--check`.
 
-Default addresses are:
+| Service | Default port | Override |
+| --- | --- | --- |
+| Trade interface and API | 18001 | `--trade-port` |
+| Regimex API | 18002 | `--regimex-port` |
+| PostgreSQL | 55445 | `--postgres-port` |
 
-| Component | Address |
-| --- | --- |
-| Trade interface and API | `http://127.0.0.1:18001` |
-| Regimex API | `http://127.0.0.1:18002` |
-| Private PostgreSQL cluster | `127.0.0.1:55445` |
+## Sign in and run the demo
 
-Override them with `--trade-port`, `--regimex-port` and `--postgres-port`.
-The runner uses Regimex's explicit loopback HTTP exception. For a remotely
-accessible installation, use verified HTTPS and the service deployment guide;
-changing these listeners to a public address is not a supported local-runner mode.
-
-## State and credentials
-
-State lives under `var/stack` by default. Use `--root /private/path` for a different
-location. The directory is private, and credential files have mode `0600`.
-`login.json` contains only the generated local UI account's email and password;
-service secrets are kept separately and never printed by the runner. Open that
-file locally to sign in, or register another account through the ordinary UI.
-
-The selected demo configuration is created for the generated account. Select
-**Запустить**, wait for completion, then use **Анализировать** in its results to
-run the saved model. A completed analysis appears on the same
-page and can be reopened using **Ссылка на анализ**. See the
-[analysis guide](regimex.md#use-the-analysis).
-
-The local runner creates its own database credentials and source-bound Regimex
-connection. Generated credentials, observations, models copied into storage,
-reports, dependency environments and logs stay under the private state directory;
-they do not belong in Git or container build contexts.
+1. Wait for the runner to print the Trade UI address, normally
+   `http://127.0.0.1:18001`. Open it and sign in with the email and password
+   from `var/stack/login.json`.
+2. Open **Эксперименты**, find the imported configuration and choose
+   **Запустить**. The `--demo` option imports a configuration for this account.
+   It accepts `mixed`, `growth`, `decline` or `reversal`. Omit it to start
+   without a demo. The saved model determines the directions you will see.
+3. Open **Мониторинг и результаты**. Once the run finishes, click **Обновить**
+   if needed, then **Анализировать**. The classification appears in the same
+   panel. See the [chart and download controls](regimex.md#use-the-analysis).
 
 ## Stop and resume
 
-Keep the runner in its terminal. Press **Ctrl+C** for an orderly shutdown of its
-own services and database. Start it again with the same arguments and state
-directory to resume using the saved data. A lock prevents two supervisors from
-using the same state directory concurrently.
+Press **Ctrl+C** in the runner's terminal to stop its processes. The databases,
+model files, reports and credentials stay in `var/stack`. Treat this directory
+as private. Child process logs are in `var/stack/logs`.
 
-Inspect the supervisor state without printing credentials:
+To resume, start the runner with the same checkout, model, digest, PostgreSQL
+binary directory and ports. To use different inputs, choose a new state
+directory with `--root`. When using a custom root, look there for `login.json`
+and logs.
+
+Check whether the runner is active.
 
 ```sh
 python3 -m backend.scripts.run_regimex --status --root var/stack
 ```
 
-Run diagnostics using this stack's private connection configuration:
+Check the running stack’s Regimex connection.
 
 ```sh
 python3 -m backend.scripts.run_regimex --doctor --root var/stack
 ```
-
-The check sends no observations and creates no analysis. See the
-[integration guide](regimex.md#connection-diagnostics-and-capacity) for its scope.
-Keep private state and credentials when preserving analyses; they are not disposable
-build output. This local supervisor is not a replacement for a service manager,
-remote deployment configuration or coordinated database/object backups.

@@ -1,4 +1,4 @@
-"""Reject excess analysis requests before database dependencies or worker threads."""
+"""Limit concurrent requests to the simulator's Regimex routes."""
 
 import logging
 import re
@@ -12,12 +12,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class RegimexConcurrencyMiddleware:
-    """One non-waiting budget per API process, including local export requests.
-
-    There is no cross-process coordination: deployment capacity is the configured
-    limit multiplied by the API process count. Ordinary simulator routes bypass
-    this budget. Admission never consumes FastAPI's shared synchronous thread pool.
-    """
+    """Refuse excess requests before they acquire a database session or worker thread."""
 
     def __init__(self, app: ASGIApp, *, max_concurrent_requests: int) -> None:
         if type(max_concurrent_requests) is not int or not 1 <= max_concurrent_requests <= 16:

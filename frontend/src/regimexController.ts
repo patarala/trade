@@ -40,7 +40,7 @@ const schedule: Schedule = (callback, milliseconds) => {
   return () => clearTimeout(timer);
 };
 
-/** One run and authenticated session; owns requests, polling and late-response fencing. */
+/** Tracks the selected analysis and discards late responses after navigation. */
 export class RegimexController {
   private client: Client;
   private saveFile: (blob: Blob, filename: string) => void;
@@ -206,7 +206,6 @@ export class RegimexController {
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;
-      // Any failed poll needs a deliberate refresh; rate limits cannot form a retry loop.
       this.statusFailed(cause);
     }
   }
@@ -232,8 +231,8 @@ export class RegimexController {
         this.statusFailed(cause);
         return;
       }
-      // Trade rejects analysis_busy before dispatch. A later refused replay cannot
-      // resolve an earlier lost acknowledgement, so keep its original retry_of.
+      // analysis_busy means this POST never reached Regimex. If an earlier POST
+      // lost its response, only a successful replay can identify that attempt.
       const uncertain = this.state.confirmationRequired || !(cause instanceof RegimexRequestError)
         || (cause.status >= 500 && !(cause.status === 503 && cause.code === "analysis_busy"));
       this.update({ submitting: false, confirmationRequired: uncertain, error: uncertain

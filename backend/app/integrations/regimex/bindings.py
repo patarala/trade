@@ -1,8 +1,4 @@
-"""Small, short-lived export identities for polling immutable completed runs.
-
-Observations are never cached. Ownership and remote snapshot metadata are checked
-on every request. Downloads and submissions always rebuild the full local export.
-"""
+"""Cache verified export metadata so polling can skip order and trade aggregation."""
 
 import copy
 import hashlib
@@ -46,7 +42,7 @@ class VerifiedExports:
             for field in ("source", "time_grid", "instruments", "content_sha256")
         })
         with self._lock:
-            # Reading/polling must not extend the lifetime of an old digest.
+            # Concurrent cache misses must preserve the first verification's expiry.
             if key in self._entries and self.clock() < self._entries[key][0]:
                 return
             self._entries[key] = (self.clock() + self.ttl, identity)
@@ -58,11 +54,10 @@ class VerifiedExports:
 def binding_key(
     db: Session, run: SimulationRun, *, subject: str, source_id: str, origin: str
 ) -> str:
-    """Fingerprint the frozen inputs without scanning order/trade event tables.
+    """Identify a completed run by its frozen configuration and initial prices.
 
-    The simulator only writes events while the run is running, under its run lock.
-    Completed runs have no supported edit operation. Direct SQL changes to their
-    historical events require a backend restart; they are outside this contract.
+    The run lock prevents new order and trade events after completion. Editing
+    those tables directly would require invalidating the cache separately.
     """
     markets = db.execute(
         select(SimulationRunInstrument.instrument_id, SimulationRunInstrument.initial_price)

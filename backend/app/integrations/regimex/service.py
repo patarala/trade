@@ -220,6 +220,8 @@ class AnalysisGateway:
             payload=self.export,
         )
         snapshot_id = _snapshot(snapshot, self.export)
+        # Replaying a lost response must find the same job. Starting another
+        # attempt after a failure changes the key through the previous analysis ID.
         operation = {
             "operation": "trade-saved-model-analysis/1",
             "subject": self.client.subject,

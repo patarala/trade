@@ -26,6 +26,10 @@ function message(cause: unknown): string {
   return cause instanceof RegimexRequestError ? cause.message : "Не удалось связаться с сервисом анализа.";
 }
 
+function resourceUnavailable(cause: unknown): boolean {
+  return cause instanceof RegimexRequestError && [401, 403, 404].includes(cause.status);
+}
+
 function previewTarget(status: RegimexStatus | null): string | null {
   return status?.enabled && status.eligible && status.analysis?.state === "succeeded"
     && status.analysis.result_available ? status.analysis.analysis_id : null;
@@ -75,7 +79,7 @@ export class RegimexController {
     this.listeners.forEach((listener) => listener());
   }
 
-  private setStatus(status: RegimexStatus, patch: Partial<AnalysisPanelState> = {}) {
+  private setStatus(status: RegimexStatus | null, patch: Partial<AnalysisPanelState> = {}) {
     const identityChanged = previewTarget(status) !== previewTarget(this.state.status);
     if (identityChanged) this.cancelPreview();
     this.update({ ...patch, status,
@@ -146,15 +150,11 @@ export class RegimexController {
   }
 
   async refresh() {
-    if (!this.active || this.state.submitting) return;
+    // While a POST is unconfirmed only replaying its key can identify the accepted job.
+    if (!this.active || this.state.submitting || this.state.confirmationRequired) return;
     this.pollCount = 0;
-    this.update({ pollingPaused: false });
-    await this.loadStatus();
-  }
-
-  private async loadStatus(uncertainMessage = "") {
     const request = this.beginRequest();
-    this.update({ loading: true, error: uncertainMessage });
+    this.update({ loading: true, error: "", pollingPaused: false });
     try {
       const status = await this.client.status(request.signal);
       if (!request.current()) return;
@@ -163,12 +163,22 @@ export class RegimexController {
         status.analysis = await this.client.poll(this.selectedAnalysisId, request.signal);
         if (!request.current()) return;
       }
-      const unresolved = uncertainMessage && (!status.analysis || ["failed", "cancelled"].includes(status.analysis.state));
-      this.setStatus(status, { loading: false, confirmationRequired: false, error: unresolved ? uncertainMessage : "" });
+      this.setStatus(status, { loading: false });
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;
-      this.update({ loading: false, error: message(cause), pollingPaused: true });
+      this.statusFailed(cause);
+    }
+  }
+
+  private statusFailed(cause: unknown) {
+    const patch = { loading: false, error: message(cause), pollingPaused: true };
+    if (resourceUnavailable(cause)) {
+      this.lifetime.abort();
+      this.lifetime = new AbortController();
+      this.setStatus(null, { ...patch, submitting: false, downloading: null, confirmationRequired: false });
+    } else {
+      this.update(patch);
     }
   }
 
@@ -197,14 +207,14 @@ export class RegimexController {
     } catch (cause) {
       if (!request.current()) return;
       // Any failed poll needs a deliberate refresh; rate limits cannot form a retry loop.
-      this.update({ error: message(cause), pollingPaused: true });
+      this.statusFailed(cause);
     }
   }
 
   async submit() {
     const status = this.state.status;
     if (!this.active || !status?.enabled || !status.eligible || this.state.loading
-      || this.state.submitting || this.state.confirmationRequired || pending(status.analysis)
+      || this.state.submitting || pending(status.analysis)
       || status.analysis?.state === "succeeded") return;
     const request = this.beginRequest();
     const retryOf = status.analysis?.analysis_id ?? null;
@@ -218,13 +228,16 @@ export class RegimexController {
       this.pollLater();
     } catch (cause) {
       if (!request.current()) return;
-      const uncertain = !(cause instanceof RegimexRequestError) || cause.status >= 500;
-      this.update({ submitting: false, error: message(cause), confirmationRequired: uncertain });
-      if (uncertain) {
-        this.selectedAnalysisId = null;
-        // A lost POST response can still mean an accepted job. Read before another submission.
-        await this.loadStatus("Подтверждение запуска не получено. Проверьте состояние перед повторной отправкой.");
+      if (resourceUnavailable(cause)) {
+        this.statusFailed(cause);
+        return;
       }
+      // Trade rejects analysis_busy before dispatch. A later refused replay cannot
+      // resolve an earlier lost acknowledgement, so keep its original retry_of.
+      const uncertain = this.state.confirmationRequired || !(cause instanceof RegimexRequestError)
+        || (cause.status >= 500 && !(cause.status === 503 && cause.code === "analysis_busy"));
+      this.update({ submitting: false, confirmationRequired: uncertain, error: uncertain
+        ? `${message(cause)} Подтверждение запуска не получено.` : message(cause) });
     }
   }
 

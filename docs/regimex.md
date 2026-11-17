@@ -111,9 +111,10 @@ preview request without creating a new analysis. **Скачать отчёт** s
 the full interactive HTML report, which works offline. **Скачать данные** downloads
 the exact observation export.
 
-Reloading the page retrieves the run's analysis from Regimex. Repeating a submission
-after a lost response reuses the same job. A failed or cancelled job can be explicitly
-retried with **Повторить анализ**; repeating that retry also reuses its accepted job.
+Reloading the page retrieves the run's analysis from Regimex. Use **Повторить анализ**
+to retry a failed or cancelled job. If the submission response is lost, the selected
+analysis stays open. **Повторить запрос запуска** sends the same idempotent request
+and opens the job it identifies, even when the history contains a newer analysis.
 An unavailable analysis service leaves the simulator's own results usable. After a
 polling error, **Проверить состояние** resumes checking.
 

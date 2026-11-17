@@ -147,18 +147,21 @@ test("leaving a saved analysis aborts its outstanding identity check", async () 
   assert.equal(p.controller.getSnapshot().status, null);
 });
 
-test("lost submission response is recovered from server state before retry", async () => {
-  let accepted = false;
-  let submissions = 0;
+test("a lost initial acknowledgement can be recovered with the same submission", async () => {
+  const submissions = [];
   const p = panel({
-    status: async () => status(accepted ? info() : null),
-    submit: async () => { accepted = true; submissions += 1; throw new TypeError("network lost"); },
+    submit: async (retryOf) => {
+      submissions.push(retryOf);
+      if (submissions.length === 1) throw new TypeError("network lost");
+      return info();
+    },
   });
   p.controller.start();
   await settled();
   await p.controller.submit();
+  assert.equal(p.controller.getSnapshot().confirmationRequired, true);
   await p.controller.submit();
-  assert.equal(submissions, 1);
+  assert.deepEqual(submissions, [null, null]);
   assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
   assert.equal(p.controller.getSnapshot().confirmationRequired, false);
   assert.equal(p.controller.getSnapshot().error, "");
@@ -166,28 +169,95 @@ test("lost submission response is recovered from server state before retry", asy
   p.controller.stop();
 });
 
-test("uncertain submission cannot be repeated while its status is unavailable", async () => {
-  let initial = true;
-  let recovered = false;
-  let submissions = 0;
+test("a rejected historical retry stays selected; an uncertain retry resolves only by its own key", async () => {
+  const acceptedId = "00000000-0000-4000-8000-000000000003";
+  const busy = new RegimexRequestError("Retry after 2 s", 503, 2, "analysis_busy");
+  const submissions = [];
+  let overviewReads = 0;
   const p = panel({
     status: async () => {
-      if (initial) { initial = false; return status(); }
-      if (recovered) return status(info());
-      throw new RegimexRequestError("Temporarily unavailable", 503);
+      overviewReads += 1;
+      return status(info("succeeded", secondId));
     },
-    submit: async () => { submissions += 1; throw new TypeError("network lost"); },
-  });
+    poll: async (id) => info("failed", id),
+    submit: async (retryOf) => {
+      submissions.push(retryOf);
+      if ([1, 3].includes(submissions.length)) throw busy;
+      if (submissions.length === 2) throw new RegimexRequestError("Gateway timed out", 504);
+      return info("queued", acceptedId);
+    },
+  }, firstId);
   p.controller.start();
   await settled();
   await p.controller.submit();
+  assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
+  assert.equal(p.controller.getSnapshot().error, busy.message);
+  assert.equal(p.controller.getSnapshot().confirmationRequired, false);
+  await p.controller.submit();
+  await p.controller.refresh();
+  assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
+  assert.equal(p.controller.getSnapshot().confirmationRequired, true);
+  assert.equal(overviewReads, 1);
+  await p.controller.submit();
   assert.equal(p.controller.getSnapshot().confirmationRequired, true);
   await p.controller.submit();
-  assert.equal(submissions, 1);
-  recovered = true;
-  await p.controller.refresh();
+  assert.deepEqual(submissions, [firstId, firstId, firstId, firstId]);
   assert.equal(p.controller.getSnapshot().confirmationRequired, false);
-  assert.equal(p.controller.getSnapshot().status.analysis.state, "queued");
+  assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, acceptedId);
+  assert.equal(p.controller.getSnapshot().error, "");
+  p.controller.stop();
+});
+
+test("definitive status failures clear the selected result and cancel its download", async (t) => {
+  for (const code of [401, 403, 404]) await t.test(String(code), async () => {
+    let allowed = true;
+    const blob = deferred();
+    const p = panel({
+      status: async () => status(info("succeeded", secondId)),
+      poll: async (id) => {
+        if (!allowed) throw new RegimexRequestError("Unavailable", code);
+        return info("succeeded", id);
+      },
+      download: () => blob.promise,
+    }, firstId);
+    p.controller.start();
+    await settled();
+    assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
+    const download = p.controller.download("report");
+    allowed = false;
+    await p.controller.refresh();
+    assert.equal(p.controller.getSnapshot().preview, null);
+    assert.equal(p.controller.getSnapshot().status, null);
+    assert.equal(p.controller.getSnapshot().downloading, null);
+    blob.resolve(new Blob(["stale report"]));
+    await download;
+    assert.deepEqual(p.downloads, []);
+    allowed = true;
+    await p.controller.refresh();
+    assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
+    p.controller.stop();
+  });
+});
+
+test("a replay that loses access releases the confirmation state for an access check", async () => {
+  let attempts = 0;
+  const p = panel({
+    status: async () => status(info("failed", firstId)),
+    submit: async () => {
+      if (++attempts === 1) throw new TypeError("network lost");
+      throw new RegimexRequestError("Analysis no longer available", 404);
+    },
+  }, firstId);
+  p.controller.start();
+  await settled();
+  await p.controller.submit();
+  await p.controller.submit();
+  const denied = p.controller.getSnapshot();
+  assert.equal(denied.status, null);
+  assert.equal(denied.submitting, false);
+  assert.equal(denied.confirmationRequired, false);
+  await p.controller.refresh();
+  assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
   p.controller.stop();
 });
 
@@ -612,5 +682,6 @@ test("capacity rejection keeps Retry-After visible after an aborted server opera
     { status: 503, headers: { "Retry-After": "2" } },
   ));
   await assert.rejects(new RegimexApi(3, 7, "jwt").history(0, new AbortController().signal),
-    (error) => error.status === 503 && error.retryAfter === 2 && error.message.includes("2 с."));
+    (error) => error.status === 503 && error.code === "analysis_busy" && error.retryAfter === 2
+      && error.message.includes("2 с."));
 });

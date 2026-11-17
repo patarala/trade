@@ -36,12 +36,14 @@ const STATES = new Set<AnalysisState>(["queued", "running", "cancel_requested", 
 export class RegimexRequestError extends Error {
   status: number;
   retryAfter: number | null;
+  code: string | null;
 
-  constructor(message: string, status: number, retryAfter: number | null = null) {
+  constructor(message: string, status: number, retryAfter: number | null = null, code: string | null = null) {
     super(message);
     this.name = "RegimexRequestError";
     this.status = status;
     this.retryAfter = retryAfter;
+    this.code = code;
   }
 }
 
@@ -109,8 +111,10 @@ async function readBody(response: Response, limit: number): Promise<Uint8Array<A
 
 async function responseError(response: Response): Promise<RegimexRequestError> {
   let message = `Сервис анализа недоступен (${response.status}).`;
+  let code: string | null = null;
   try {
     const value = object(JSON.parse(new TextDecoder().decode(await readBody(response, 16 * 1024))));
+    if (typeof value.code === "string") code = value.code;
     if (typeof value.detail === "string") message = value.detail;
     else if (value.error && typeof value.error === "object" && "message" in value.error
       && typeof value.error.message === "string") message = value.error.message;
@@ -118,7 +122,7 @@ async function responseError(response: Response): Promise<RegimexRequestError> {
   const header = response.headers.get("Retry-After");
   const retryAfter = header && /^\d+$/.test(header) ? Math.min(Number(header), 3600) : null;
   if ([429, 503].includes(response.status) && retryAfter) message += ` Повторите через ${retryAfter} с.`;
-  return new RegimexRequestError(message, response.status, retryAfter);
+  return new RegimexRequestError(message, response.status, retryAfter, code);
 }
 
 export class RegimexApi {

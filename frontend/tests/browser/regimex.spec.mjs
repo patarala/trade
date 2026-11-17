@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 
-import { analysisId, installPeer, link, olderId } from "./fixtures.mjs";
+import { analysis, analysisId, installPeer, link, olderId } from "./fixtures.mjs";
 
 async function downloadText(page, button) {
   const pending = page.waitForEvent("download");
@@ -87,5 +87,40 @@ test("unknown linked instrument is explicit and can be corrected", async ({ page
   await expect(page.getByRole("alert")).toContainText("Инструмента из ссылки нет");
   await page.getByRole("combobox", { name: "Инструмент анализа" }).selectOption("BTC/USD");
   await expect(page.getByRole("img")).toBeVisible();
+  expect(peer.errors).toEqual([]);
+});
+
+test("historical retry keeps its link until the exact submission is acknowledged", async ({ page }) => {
+  const peer = await installPeer(page);
+  const acceptedId = "00000000-0000-4000-8000-000000000003";
+  const accepted = { ...analysis(acceptedId), state: "queued", result_available: false, report_available: false };
+  const submissions = [];
+  await page.route("**/regimex/analyses**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === "POST" && path.endsWith("/analyses")) {
+      submissions.push(route.request().postDataJSON());
+      if (submissions.length === 1) return route.fulfill({ status: 503, headers: { "Retry-After": "2" },
+        json: { code: "analysis_busy", detail: "Analysis capacity is busy", retryable: true } });
+      if (submissions.length === 2) return route.abort("failed");
+      return route.fulfill({ status: 202, json: accepted });
+    }
+    if (path.endsWith(`/analyses/${olderId}`)) return route.fulfill({ json: {
+      ...analysis(olderId), state: "failed", result_available: false, report_available: false,
+    } });
+    if (path.endsWith(`/analyses/${acceptedId}`)) return route.fulfill({ json: accepted });
+    return route.fallback();
+  });
+  await page.goto(link(olderId));
+  const retry = page.getByRole("button", { name: "Повторить анализ", exact: true });
+  await retry.click();
+  await expect(page.getByRole("alert")).toContainText("2 с.");
+  await expect(page).toHaveURL(new RegExp(olderId));
+  await retry.click();
+  await expect(page.getByRole("alert")).toContainText("Подтверждение запуска не получено");
+  await expect(page).toHaveURL(new RegExp(olderId));
+  await page.getByRole("button", { name: "Повторить запрос запуска" }).click();
+  await expect(page).toHaveURL(new RegExp(acceptedId));
+  await expect(page.getByRole("combobox", { name: "Анализ", exact: true })).toHaveValue(acceptedId);
+  expect(submissions).toEqual(Array.from({ length: 3 }, () => ({ retry_of: olderId })));
   expect(peer.errors).toEqual([]);
 });

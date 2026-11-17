@@ -65,7 +65,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
       </span>}
     </div>
 
-    {((view.status?.enabled && view.status.eligible) || (requestedAnalysisId && !view.status))
+    {((view.status?.enabled && view.status.eligible) || (requestedAnalysisId && !view.status && view.loading))
       && <RegimexHistory api={api} selected={analysis} select={selectAnalysis} />}
     {requestedAnalysisId && view.loading && <p className="panel-note" role="status">Открываем сохранённый анализ…</p>}
     {view.status?.enabled === false && requestedAnalysisId && <p className="form-error" role="alert">Regimex сейчас отключён. Сохранённый анализ недоступен.</p>}
@@ -86,15 +86,16 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
         onInstrumentChange={selectInstrument} />}
 
     {(view.status?.eligible || active || view.error || view.confirmationRequired) && <div className="card-actions regimex-actions">
-      {canSubmit && !view.confirmationRequired && <button className="primary-button" disabled={busy}
+      {canSubmit && <button className="primary-button" disabled={busy}
         onClick={() => { void controller.submit(); }} type="button">
-        {view.submitting ? "Отправляем…" : analysis ? "Повторить анализ" : "Анализировать"}
+        {view.submitting ? "Отправляем…" : view.confirmationRequired ? "Повторить запрос запуска"
+          : analysis ? "Повторить анализ" : "Анализировать"}
       </button>}
       {analysis?.state === "succeeded" && analysis.report_available && <button className="secondary-button"
         disabled={view.downloading !== null} onClick={() => { void controller.download("report"); }} type="button">
         {view.downloading === "report" ? "Скачиваем…" : "Скачать отчёт"}
       </button>}
-      {(active || reportUnavailable || view.error || view.confirmationRequired || view.pollingPaused) && <button className="secondary-button"
+      {!view.confirmationRequired && (active || reportUnavailable || view.error || view.pollingPaused) && <button className="secondary-button"
         disabled={busy} onClick={() => { void controller.refresh(); }} type="button">
         {view.loading ? "Проверяем…" : "Проверить состояние"}
       </button>}

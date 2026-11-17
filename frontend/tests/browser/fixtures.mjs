@@ -5,7 +5,7 @@ export const link = (id = analysisId, instrument = "BTC/USD") =>
   `/tests/browser/index.html#/simulations/3/runs/7/analyses/${id}?instrument=${encodeURIComponent(instrument)}`;
 export { analysisId };
 
-function analysis(id) {
+export function analysis(id) {
   return { analysis_id: id, run_id: 7, state: "succeeded", stage: "complete", failure: null,
     model_version_id: id === olderId ? "baseline-saved" : "🧪".repeat(65),
     created_at: id === olderId ? "2026-01-01T12:00:00Z" : "2026-01-02T12:00:00Z",

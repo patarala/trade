@@ -8,6 +8,7 @@ import {
 } from "./api";
 import { decimalLabel, runStatusLabel } from "./simulationDisplay";
 import { useRequest } from "./useRequest";
+import { Pagination } from "./Pagination";
 import { RegimexAnalysis } from "./RegimexAnalysis";
 import type { AnalysisLink } from "./regimexLink";
 
@@ -224,14 +225,8 @@ function HistoryPage({ simulationId, runId, instrumentId, token, refreshVersion,
       ))}
       {rows.length === 0 && <tr><td colSpan={kind === "orders" ? 8 : 6}>Пока нет {kind === "orders" ? "заявок" : "сделок"}</td></tr>}
     </DataTable>}
-    <Pagination label="История" page={page} back={onBack} next={() => onNext(rows[rows.length - 1].sequence_number)} hasNext={Boolean(data && data.length > PAGE_SIZE)} />
+    <Pagination label="История" page={page} pageSize={PAGE_SIZE} back={onBack} next={() => onNext(rows[rows.length - 1].sequence_number)} hasNext={Boolean(data && data.length > PAGE_SIZE)} />
   </>;
-}
-
-function Pagination({ label, page, back, next, hasNext }: { label: string; page: number; back: () => void; next: () => void; hasNext: boolean }) {
-  return <nav className="pagination" aria-label={label}><button className="secondary-button" disabled={page === 1} onClick={back} type="button">Назад</button>
-    <span className="user-meta">Страница {page} · до {PAGE_SIZE} записей</span>
-    <button className="secondary-button" disabled={!hasNext} onClick={next} type="button">Далее</button></nav>;
 }
 
 function Participants(props: { simulationId: number; runId: number; token: string; refreshVersion: number; assetSymbol: (id: number) => string }) {
@@ -260,6 +255,6 @@ function ParticipantPage({ simulationId, runId, token, refreshVersion, assetSymb
         <td>{assetSymbol(b.asset_id)}</td><td>{decimalLabel(b.available)}</td><td>{decimalLabel(b.reserved)}</td></tr>))}
       {participants.length === 0 && <tr><td colSpan={5}>Нет участников</td></tr>}
     </DataTable>}
-    <Pagination label="Участники" page={page} back={back} next={() => next(participants[participants.length - 1].sequence_number)} hasNext={Boolean(data && data.length > PAGE_SIZE)} />
+    <Pagination label="Участники" page={page} pageSize={PAGE_SIZE} back={back} next={() => next(participants[participants.length - 1].sequence_number)} hasNext={Boolean(data && data.length > PAGE_SIZE)} />
   </>;
 }

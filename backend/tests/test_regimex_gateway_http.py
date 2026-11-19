@@ -173,6 +173,19 @@ class RegimexHTTPTests(unittest.TestCase):
                 (raised.exception.status, raised.exception.code), (expected_status, expected_code)
             )
 
+    def test_missing_intake_and_delivery_endpoints_identify_a_configuration_problem(self):
+        self.server.status = 404
+        self.server.blocks = [b'{"detail":"Not Found"}']
+        client = self.client()
+        for request in (
+            lambda: client.json("POST", "/api/v1/integration/analysis-intake", payload={}),
+            lambda: client.delivery(str(uuid4()), include_report=True),
+        ):
+            with self.assertRaises(GatewayError) as raised:
+                request()
+            self.assertEqual(raised.exception.status, 502)
+            self.assertEqual(raised.exception.code, "analysis_endpoint_unavailable")
+
     def test_rate_limit_preserves_only_bounded_retry_delay(self):
         self.server.status = 429
         self.server.headers += [("Retry-After", "12")]

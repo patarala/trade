@@ -99,7 +99,9 @@ python -m backend.scripts.regimex_doctor
 ```
 
 The command checks the configured origin, connection key, namespace, permissions,
-Regimex database readiness and active model. If a key is rejected, inspect the
+analysis protocol, database readiness and active model. Trade requires
+`regimex-analysis/1` in Regimex's `/api/v1/connection` response. When upgrading
+the services independently, update Regimex first and confirm the diagnostic passes. If a key is rejected, inspect the
 connection in Regimex. For worker health, run `regimex service doctor` in the
 Regimex worker environment. For scripts, add `--json`. Exit status 0 means the
 check passed or the integration is disabled. Failures return 1.

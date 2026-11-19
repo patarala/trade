@@ -16,7 +16,7 @@ async function expectNoOverflow(page) {
 
 test("a saved link still exports the run when Regimex is disabled", async ({ page }) => {
   await installPeer(page);
-  await page.route("**/regimex?run_id=7", (route) => route.fulfill({
+  await page.route("**/regimex?*", (route) => route.fulfill({
     json: { enabled: false, eligible: true, analysis: null, reason: null },
   }));
   await page.goto(link());
@@ -109,8 +109,14 @@ test("historical retry keeps its link until the exact submission is acknowledged
   const acceptedId = "00000000-0000-4000-8000-000000000003";
   const accepted = { ...analysis(acceptedId), state: "queued", result_available: false, report_available: false };
   const submissions = [];
-  await page.route("**/regimex/analyses**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+  await page.route("**/regimex**", async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path.endsWith("/regimex")) {
+      const selected = url.searchParams.get("analysis_id") === olderId
+        ? { ...analysis(olderId), state: "failed", result_available: false, report_available: false } : accepted;
+      return route.fulfill({ json: { enabled: true, eligible: true, reason: null, analysis: selected } });
+    }
     if (route.request().method() === "POST" && path.endsWith("/analyses")) {
       submissions.push(route.request().postDataJSON());
       if (submissions.length === 1) return route.fulfill({ status: 503, headers: { "Retry-After": "2" },
@@ -118,9 +124,6 @@ test("historical retry keeps its link until the exact submission is acknowledged
       if (submissions.length === 2) return route.abort("failed");
       return route.fulfill({ status: 202, json: accepted });
     }
-    if (path.endsWith(`/analyses/${olderId}`)) return route.fulfill({ json: {
-      ...analysis(olderId), state: "failed", result_available: false, report_available: false,
-    } });
     if (path.endsWith(`/analyses/${acceptedId}`)) return route.fulfill({ json: accepted });
     return route.fallback();
   });
@@ -137,4 +140,44 @@ test("historical retry keeps its link until the exact submission is acknowledged
   await expect(page.getByRole("combobox", { name: "Анализ", exact: true })).toHaveValue(acceptedId);
   expect(submissions).toEqual(Array.from({ length: 3 }, () => ({ retry_of: olderId })));
   expect(peer.errors).toEqual([]);
+});
+
+test("an older analysis opens inside the monitor when only one upstream read is available", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("exchange-simulator-token", "browser-fixture-token"));
+  const scopedReads = [];
+  const run = { id: 7, simulation_id: 3, status: "completed", current_step: 12, total_steps: 12,
+    seed: 43, started_at: "2026-01-01T12:00:00Z", instrument_ids: [], error_message: null };
+  const replies = {
+    "/api/auth/me": { id: 1, email: "trader@example.test", role: "user", is_active: true },
+    "/api/assets": [], "/api/instruments": [],
+    "/api/simulations/3": { id: 3, name: "Тестовый эксперимент" },
+    "/api/simulations/3/regimex/run": run, "/api/simulations/3/balances": [],
+    "/api/simulations/3/results": { ...run, balances: [], initial_portfolio_value: "100",
+      portfolio_value: "105", profit: "5", return_pct: "5", trade_count: 8, test_trade_count: 2 },
+  };
+  const selected = { ...analysis(olderId), state: "failed", failure: { code: "source_failure",
+    message: "The analysis source was temporarily unavailable.", retryable: true }, result_available: false, report_available: false };
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (Object.hasOwn(replies, url.pathname)) return route.fulfill({ json: replies[url.pathname] });
+    if (!url.pathname.startsWith("/api/simulations/3/regimex")) return route.fulfill({ status: 404 });
+    scopedReads.push(url);
+    if (scopedReads.length > 1) return route.fulfill({ status: 429, headers: { "Retry-After": "60" },
+      json: { code: "analysis_busy", detail: "Too many requests" } });
+    return route.fulfill({ json: { enabled: true, eligible: true, reason: null,
+      analysis: url.searchParams.get("analysis_id") === olderId ? selected : analysis(analysisId) } });
+  });
+  await page.goto("/" + new URL(link(olderId), "http://localhost").hash);
+  const monitor = page.getByRole("region", { name: "Состояние запуска" });
+  const panel = page.getByRole("region", { name: "Анализ Regimex" });
+  await expect(monitor).toContainText("Завершён");
+  await expect(panel.getByRole("button", { name: "Повторить анализ" })).toBeEnabled();
+  await expect(panel).toContainText("Источник данных временно недоступен");
+  await expect(panel).toContainText("Повторите через 60 с.");
+  expect(scopedReads[0].searchParams.get("analysis_id")).toBe(olderId);
+  expect(scopedReads.some((url) => url.pathname.endsWith(`/analyses/${olderId}`))).toBe(false);
+  await expectNoOverflow(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectNoOverflow(page);
+  await expect(panel.getByRole("button", { name: "Обновить историю" })).toBeEnabled();
 });

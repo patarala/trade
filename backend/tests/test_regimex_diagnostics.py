@@ -53,7 +53,11 @@ class RegimexDiagnosticTests(unittest.TestCase):
             ),
             "/api/v1/connection": (
                 200,
-                {"source_namespace": "trade-test", "scopes": ["read", "upload", "analyze"]},
+                {
+                    "source_namespace": "trade-test",
+                    "scopes": ["read", "upload", "analyze"],
+                    "analysis_protocol": "regimex-analysis/1",
+                },
                 {},
             ),
         }
@@ -84,6 +88,7 @@ class RegimexDiagnosticTests(unittest.TestCase):
                 "connection": "passed",
                 "source": "passed",
                 "capabilities": "passed",
+                "protocol": "passed",
                 "database": "passed",
                 "model": "passed",
                 "worker": "not_checked",
@@ -100,11 +105,29 @@ class RegimexDiagnosticTests(unittest.TestCase):
                 self.assertNotIn("Authorization", headers)
         self.assertNotIn(TOKEN, json.dumps(asdict(report)))
 
+    def test_old_or_unrecognized_analysis_protocol_fails_operator_check(self):
+        _, current, _ = self.server.responses["/api/v1/connection"]
+        for protocol in (None, "regimex-analysis/2"):
+            with self.subTest(protocol=protocol):
+                account = current.copy()
+                if protocol is None:
+                    del account["analysis_protocol"]
+                else:
+                    account["analysis_protocol"] = protocol
+                self.server.responses["/api/v1/connection"] = (200, account, {})
+                report = diagnose(self.settings)
+                self.assertEqual(report.status, "failed")
+                self.assertEqual(
+                    [item.code for item in report.checks if item.status == "failed"],
+                    ["incompatible_protocol"],
+                )
+
     def test_wrong_source_and_missing_permissions_are_reported_without_submitting_work(self):
         self.server.responses["/api/v1/connection"] = (
             200,
             {
                 "source_namespace": "another-source",
+                "analysis_protocol": "regimex-analysis/1",
                 "scopes": ["upload"],
             },
             {},

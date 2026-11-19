@@ -156,13 +156,8 @@ export class RegimexController {
     const request = this.beginRequest();
     this.update({ loading: true, error: "", pollingPaused: false });
     try {
-      const status = await this.client.status(request.signal);
+      const status = await this.client.status(request.signal, this.selectedAnalysisId);
       if (!request.current()) return;
-      if (status.enabled && status.eligible && this.selectedAnalysisId
-        && status.analysis?.analysis_id !== this.selectedAnalysisId) {
-        status.analysis = await this.client.poll(this.selectedAnalysisId, request.signal);
-        if (!request.current()) return;
-      }
       this.setStatus(status, { loading: false });
       this.pollLater();
     } catch (cause) {
@@ -231,10 +226,12 @@ export class RegimexController {
         this.statusFailed(cause);
         return;
       }
-      // analysis_busy means this POST never reached Regimex. If an earlier POST
-      // lost its response, only a successful replay can identify that attempt.
+      // An explicit refusal leaves no new job. After an earlier lost response,
+      // only a successful replay can identify the accepted attempt.
+      const rejected = cause instanceof RegimexRequestError
+        && (cause.code === "analysis_busy" || cause.code === "analysis_endpoint_unavailable");
       const uncertain = this.state.confirmationRequired || !(cause instanceof RegimexRequestError)
-        || (cause.status >= 500 && !(cause.status === 503 && cause.code === "analysis_busy"));
+        || (cause.status >= 500 && !rejected);
       this.update({ submitting: false, confirmationRequired: uncertain, error: uncertain
         ? `${message(cause)} Подтверждение запуска не получено.` : message(cause) });
     }

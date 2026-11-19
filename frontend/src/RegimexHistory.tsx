@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 
 import type { Analysis, RegimexApi } from "./regimexApi";
 import { analysisStateLabels } from "./regimexApi";
+import { Pagination } from "./Pagination";
 import { useRequest } from "./useRequest";
 
 type Props = { api: RegimexApi; selected: Analysis | null; select: (id: string) => void };
@@ -12,7 +13,7 @@ export function RegimexHistory(props: Props) {
 }
 
 function label(item: Analysis): string {
-  const date = new Date(item.created_at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
+  const date = new Date(item.created_at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "medium" });
   return `${item.model_version_id} · ${analysisStateLabels[item.state]} · ${date}`;
 }
 
@@ -33,15 +34,11 @@ function HistoryPage({ api, selected, select, offset, move }: Props & { offset: 
           {items.map((item) => <option key={item.analysis_id} value={item.analysis_id}>{label(item)}</option>)}
         </select>
       </label> : <p className="panel-note">Сохранённых анализов пока нет.</p>}
-      <div className="regimex-history-actions">
-        {(offset > 0 || data.has_more) && <nav aria-label="История анализов">
-          <button className="text-button" disabled={offset === 0} onClick={() => move(Math.max(0, offset - data.limit))} type="button">Новее</button>
-          <span>{data.items.length ? `${offset + 1}–${offset + data.items.length}` : "Нет записей"}</span>
-          <button className="text-button" disabled={!data.has_more || offset + data.limit > 10000}
-            onClick={() => move(offset + data.limit)} type="button">Старее</button>
-        </nav>}
-        {!error && <button className="text-button" onClick={refresh} type="button">Обновить историю</button>}
-      </div>
+      {!error && <button className="text-button regimex-refresh-history" onClick={refresh} type="button">Обновить историю</button>}
+      {(offset > 0 || data.has_more) && <Pagination label="История анализов"
+        page={1 + Math.floor(offset / data.limit)} pageSize={data.limit}
+        back={() => move(Math.max(0, offset - data.limit))}
+        next={() => move(offset + data.limit)} hasNext={data.has_more && offset + data.limit <= 10000} />}
       {data.has_more && offset + data.limit > 10000 && <p className="panel-note">Достигнут предел просмотра истории. Более старый анализ можно открыть по сохранённой ссылке.</p>}
     </>}
   </div>;

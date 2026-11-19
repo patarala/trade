@@ -143,7 +143,7 @@ def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> 
 
 
 @router.get("/{simulation_id}/regimex")
-def overview(db: DbSession, owned: Owned) -> JSONResponse:
+def overview(db: DbSession, owned: Owned, analysis_id: UUID | None = None) -> JSONResponse:
     run_id = owned.run.id
     connection = settings.regimex_connection()
     reason = _reason(owned.run)
@@ -166,7 +166,7 @@ def overview(db: DbSession, owned: Owned) -> JSONResponse:
             {"enabled": True, "eligible": False, "reason": error.message, "analysis": None},
             headers=_HEADERS,
         )
-    value = gateway.latest()
+    value = gateway.latest() if analysis_id is None else gateway.bound(str(analysis_id))
     return JSONResponse(
         {
             "enabled": True,

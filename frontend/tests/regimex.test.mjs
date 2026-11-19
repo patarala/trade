@@ -122,10 +122,10 @@ test("reopening completed analysis restores report without submitting another jo
 });
 
 test("a saved older analysis stays selected during refresh and report downloads", async () => {
-  const polled = [], downloaded = [];
+  const reads = [], downloaded = [];
   const p = panel({
-    status: async () => status(info("succeeded", secondId)),
-    poll: async (id) => { polled.push(id); return info("succeeded", id); },
+    status: async (_signal, id) => { reads.push(id); return status(info("succeeded", id)); },
+    poll: async () => assert.fail("Only one metadata request is allowed per refresh"),
     download: async (_kind, id) => { downloaded.push(id); return new Blob(["saved report"]); },
   }, firstId);
   p.controller.start();
@@ -133,15 +133,14 @@ test("a saved older analysis stays selected during refresh and report downloads"
   assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
   await p.controller.refresh();
   await p.controller.download("report");
-  assert.deepEqual(polled, [firstId, firstId]);
+  assert.deepEqual(reads, [firstId, firstId]);
   assert.deepEqual(downloaded, [firstId]);
   p.controller.stop();
 });
 
 test("an unavailable linked analysis fails explicitly without showing the latest result", async () => {
   const p = panel({
-    status: async () => status(info("succeeded", secondId)),
-    poll: async () => { throw new RegimexRequestError("Analysis not found", 404); },
+    status: async () => { throw new RegimexRequestError("Analysis not found", 404); },
   }, firstId);
   p.controller.start();
   await settled();
@@ -156,13 +155,12 @@ test("leaving a saved analysis aborts its outstanding identity check", async () 
   const delayed = deferred();
   let signal;
   const p = panel({
-    status: async () => status(info("succeeded", secondId)),
-    poll: async (_id, value) => { signal = value; return delayed.promise; },
+    status: async (value) => { signal = value; return delayed.promise; },
   }, firstId);
   p.controller.start();
   await settled();
   p.controller.stop();
-  delayed.resolve(info("succeeded", firstId));
+  delayed.resolve(status(info("succeeded", firstId)));
   await settled();
   assert.equal(signal.aborted, true);
   assert.equal(p.controller.getSnapshot().status, null);
@@ -196,11 +194,10 @@ test("a rejected historical retry stays selected; an uncertain retry resolves on
   const submissions = [];
   let overviewReads = 0;
   const p = panel({
-    status: async () => {
+    status: async (_signal, id) => {
       overviewReads += 1;
-      return status(info("succeeded", secondId));
+      return status(info("failed", id));
     },
-    poll: async (id) => info("failed", id),
     submit: async (retryOf) => {
       submissions.push(retryOf);
       if ([1, 3].includes(submissions.length)) throw busy;
@@ -234,10 +231,9 @@ test("definitive status failures clear the selected result and cancel its downlo
     let allowed = true;
     const blob = deferred();
     const p = panel({
-      status: async () => status(info("succeeded", secondId)),
-      poll: async (id) => {
+      status: async (_signal, id) => {
         if (!allowed) throw new RegimexRequestError("Unavailable", code);
-        return info("succeeded", id);
+        return status(info("succeeded", id));
       },
       download: () => blob.promise,
     }, firstId);
@@ -418,6 +414,24 @@ test("history pages are bounded and every item must belong to this run", async (
     page = { items: [info()], limit: 10, offset: 20, has_more: false, ...invalid };
     await assert.rejects(api.history(20, signal), RegimexRequestError);
   }
+});
+
+test("a linked overview is addressed once and requires that exact analysis when available", async (t) => {
+  const api = new RegimexApi(3, 7, "jwt");
+  const signal = new AbortController().signal;
+  let reply = status(info("succeeded", firstId));
+  const paths = [];
+  t.mock.method(globalThis, "fetch", async (path) => { paths.push(path); return Response.json(reply); });
+  assert.equal((await api.status(signal, firstId)).analysis.analysis_id, firstId);
+  assert.deepEqual(paths, [`/api/simulations/3/regimex?analysis_id=${firstId}&run_id=7`]);
+  reply = status(info("succeeded", secondId));
+  await assert.rejects(api.status(signal, firstId), RegimexRequestError);
+  reply = status(null);
+  await assert.rejects(api.status(signal, firstId), RegimexRequestError);
+  reply.enabled = false;
+  assert.equal((await api.status(signal, firstId)).analysis, null);
+  await assert.rejects(api.status(signal, "invalid"), RegimexRequestError);
+  assert.equal(paths.length, 4);
 });
 
 test("API preserves safe rate-limit errors and refuses oversized responses", async (t) => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
-import { analysisStateLabels, RegimexApi } from "./regimexApi";
+import { analysisMessage, analysisStateLabels, RegimexApi } from "./regimexApi";
 import { pending, RegimexController } from "./regimexController";
 import { RegimexResult } from "./RegimexResult";
 import { RegimexHistory } from "./RegimexHistory";
@@ -58,7 +58,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
   }
 
   return <section className="panel regimex-panel" aria-label="Анализ Regimex">
-    <div className="regimex-heading">
+    <div className="panel-heading monitor-toolbar">
       <h2>Анализ Regimex</h2>
       {analysis && <span className={`run-status ${badge}`} role="status">
         {analysisStateLabels[analysis.state]}
@@ -70,7 +70,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
     {requestedAnalysisId && view.loading && <p className="panel-note" role="status">Открываем сохранённый анализ…</p>}
     {view.status?.enabled === false && requestedAnalysisId && <p className="form-error" role="alert">Regimex сейчас отключён. Сохранённый анализ недоступен.</p>}
     {view.status && !view.status.eligible && <p className="panel-note">{view.status.reason ?? "Этот запуск недоступен для анализа."}</p>}
-    {analysis?.failure && <p className="form-error" role="alert">{analysis.failure.message}</p>}
+    {analysis?.failure && <p className="form-error" role="alert">{analysisMessage(analysis.failure.code, analysis.failure.message)}</p>}
     {view.error && <p className="form-error" role="alert">{view.error}</p>}
     {reportUnavailable && <p className="panel-note">Анализ завершён, но отчёт недоступен.</p>}
     {view.pollingPaused && active && !view.error && <p className="panel-note">Автообновление приостановлено. Проверьте состояние вручную.</p>}

@@ -57,7 +57,7 @@ export async function installPeer(page, { previewFailures = 0, capacity = 1 } = 
       await new Promise((resolve) => setTimeout(resolve, 15));
       const suffix = url.pathname.replace("/api/simulations/3/regimex", "");
       const id = suffix.includes(olderId) ? olderId : analysisId;
-      if (!suffix) return await route.fulfill({ json: { enabled: true, eligible: true, reason: null, analysis: analysis(analysisId) } });
+      if (!suffix) return await route.fulfill({ json: { enabled: true, eligible: true, reason: null, analysis: analysis(url.searchParams.get("analysis_id") ?? analysisId) } });
       if (suffix === "/analyses") return await route.fulfill({ json: {
         items: [analysis(analysisId), analysis(olderId)], limit: 10, offset: 0, has_more: false,
       } });

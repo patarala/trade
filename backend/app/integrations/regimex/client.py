@@ -285,6 +285,14 @@ class _ConfiguredClient:
             error = GatewayError(
                 f"{artifact}_pending", f"The analysis {artifact} is not ready.", 409
             )
+        elif status == 404 and error_code is None and (
+            delivery or path.partition("?")[0] == "/api/v1/integration/analysis-intake"
+        ):
+            error = GatewayError(
+                "analysis_endpoint_unavailable",
+                "The Regimex analysis endpoint is unavailable. Check its origin and version.",
+                502,
+            )
         elif status == 404:
             error = GatewayError("not_found", "The analysis resource was not found.", 404)
         elif status == 409 and error_code == "model_unavailable":

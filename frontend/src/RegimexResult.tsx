@@ -5,6 +5,7 @@ import { focusRange, intervalKind, intervalLabels, stepLabel, stepRange } from "
 import type { IntervalKind, PriceMode, StepRange } from "./regimexChart";
 import { intervalsCsv, observationsCsv } from "./regimexCsv";
 import { saveDownload } from "./regimexApi";
+import { Pagination } from "./Pagination";
 import { RegimexIntervalDetails } from "./RegimexIntervalDetails";
 import { RegimexPriceCharts } from "./RegimexPriceCharts";
 import "./regimexResult.css";
@@ -113,10 +114,7 @@ function IntervalTable({ instrument, focus, select }: {
         </Fragment>;
       })}</tbody>
     </table></div>
-    {pageCount > 1 && <nav className="regimex-pagination" aria-label="Страницы интервалов">
-      <button className="secondary-button" disabled={page === 0} onClick={() => setPage(page - 1)} type="button">Назад</button>
-      <span>{page + 1} / {pageCount}</span>
-      <button className="secondary-button" disabled={page + 1 >= pageCount} onClick={() => setPage(page + 1)} type="button">Далее</button>
-    </nav>}
+    {pageCount > 1 && <Pagination label="Страницы интервалов" page={page + 1} pageSize={PAGE_SIZE} pageCount={pageCount}
+      hasNext={page + 1 < pageCount} back={() => setPage(page - 1)} next={() => setPage(page + 1)} />}
   </>;
 }

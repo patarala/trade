@@ -203,6 +203,17 @@ def diagnose(settings: RegimexSettings) -> DiagnosticReport:
                     "A current integration credential was accepted.",
                 )
             )
+            compatible = account.get("analysis_protocol") == "regimex-analysis/1"
+            checks.append(
+                Check(
+                    "protocol",
+                    "passed" if compatible else "failed",
+                    "protocol_verified" if compatible else "incompatible_protocol",
+                    "The service supports analysis submission and delivery."
+                    if compatible
+                    else "Trade requires regimex-analysis/1. Check the Regimex version.",
+                )
+            )
             matches = source == connection.source_id
             checks.append(
                 Check(

@@ -4,7 +4,7 @@ import type { AnalysisPreview } from "./regimexResult";
 export type AnalysisState = "queued" | "running" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
 export const analysisStateLabels: Record<AnalysisState, string> = {
   queued: "В очереди", running: "Выполняется", cancel_requested: "Останавливается",
-  succeeded: "Готов", failed: "Ошибка анализа", cancelled: "Отменён",
+  succeeded: "Завершён", failed: "Ошибка", cancelled: "Отменён",
 };
 
 export type Analysis = {
@@ -32,6 +32,26 @@ export type AnalysisHistory = { items: Analysis[]; limit: number; offset: number
 const MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STATES = new Set<AnalysisState>(["queued", "running", "cancel_requested", "succeeded", "failed", "cancelled"]);
+
+const analysisMessages = new Map([
+  ["analysis_busy", "Сервис анализа занят."],
+  ["analysis_endpoint_unavailable", "Сервис не поддерживает запрос анализа. Обратитесь к администратору Regimex."],
+  ["connection_access_denied", "Не удалось подключиться к Regimex. Попросите администратора проверить подключение."],
+  ["storage_quota_exceeded", "В Regimex закончилось место. Попросите администратора освободить место или увеличить квоту."],
+  ["model_unavailable", "Нет активной модели. Попросите администратора Regimex опубликовать модель."],
+  ["analysis_unavailable", "Regimex временно недоступен. Результаты эксперимента можно просматривать."],
+  ["invalid_data", "Не удалось обработать наблюдения этого запуска."],
+  ["unsupported_configuration", "Выбранная модель не поддерживает параметры этого анализа."],
+  ["incompatible_artifact", "Сохранённая модель или данные анализа не прошли проверку."],
+  ["capacity_limit", "Анализ превысил лимит вычислений или хранилища."],
+  ["source_failure", "Источник данных временно недоступен."],
+  ["infrastructure_failure", "Во время анализа произошёл временный сбой Regimex."],
+  ["attempts_exhausted", "Анализ не завершился за отведённое число попыток."],
+]);
+
+export function analysisMessage(code: string, detail: string) {
+  return analysisMessages.get(code) ?? detail;
+}
 
 export class RegimexRequestError extends Error {
   status: number;
@@ -119,6 +139,7 @@ async function responseError(response: Response): Promise<RegimexRequestError> {
     else if (value.error && typeof value.error === "object" && "message" in value.error
       && typeof value.error.message === "string") message = value.error.message;
   } catch { /* An invalid error body must not replace the HTTP failure. */ }
+  if (code !== null) message = analysisMessage(code, message);
   const header = response.headers.get("Retry-After");
   const retryAfter = header && /^\d+$/.test(header) ? Math.min(Number(header), 3600) : null;
   if ([429, 503].includes(response.status) && retryAfter) message += ` Повторите через ${retryAfter} с.`;
@@ -201,15 +222,17 @@ export class RegimexApi {
     });
   }
 
-  async status(signal: AbortSignal): Promise<RegimexStatus> {
-    const value = object(await this.json("", signal));
+  async status(signal: AbortSignal, selectedId: string | null = null): Promise<RegimexStatus> {
+    if (selectedId !== null && !UUID.test(selectedId)) throw invalidResponse();
+    const value = object(await this.json(selectedId === null ? "" : `?analysis_id=${selectedId}`, signal));
     if (typeof value.enabled !== "boolean" || typeof value.eligible !== "boolean"
-      || !(value.reason === null || typeof value.reason === "string")) throw invalidResponse();
+      || !(value.reason === null || typeof value.reason === "string")
+      || (selectedId !== null && value.enabled && value.eligible && value.analysis === null)) throw invalidResponse();
     return {
       enabled: value.enabled,
       eligible: value.eligible,
       reason: value.reason,
-      analysis: value.analysis === null ? null : analysis(value.analysis, this.runId),
+      analysis: value.analysis === null ? null : analysis(value.analysis, this.runId, selectedId ?? undefined),
     };
   }
 

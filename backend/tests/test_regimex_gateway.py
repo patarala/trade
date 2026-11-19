@@ -363,6 +363,21 @@ class RegimexGatewayTests(unittest.TestCase):
         item["snapshot_sha256"] = "0" * 64
         self.assertEqual(self.request(suffix="/analyses")[0], 502)
 
+    def test_opening_an_older_analysis_uses_one_bound_request(self):
+        selected = self.peer.create_analysis()["analysis_id"]
+        self.peer.create_analysis()
+        query = "&analysis_id=" + selected
+        self.assertEqual(self.request(query=query, token=self.other_token)[0], 404)
+        self.assertEqual(self.request(query="&analysis_id=bad")[0], 422)
+        self.assertFalse(self.peer.calls)
+        status, _, body = self.request(query=query)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["analysis"]["analysis_id"], selected)
+        self.assertEqual(len(self.peer.calls), 1)
+        self.assertEqual(self.peer.calls[0][1], "/api/v1/integration/analyses/" + selected)
+        self.peer.analyses[selected]["snapshot_sha256"] = "0" * 64
+        self.assertEqual(self.request(query=query)[0], 502)
+
     def test_history_limits_are_checked_before_upstream_requests(self):
         for query in ("&limit=0", "&limit=21", "&offset=-1", "&offset=10001", "&offset=invalid"):
             with self.subTest(query=query):

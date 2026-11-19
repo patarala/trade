@@ -14,6 +14,20 @@ async function expectNoOverflow(page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
 
+test("a saved link still exports the run when Regimex is disabled", async ({ page }) => {
+  await installPeer(page);
+  await page.route("**/regimex?run_id=7", (route) => route.fulfill({
+    json: { enabled: false, eligible: true, analysis: null, reason: null },
+  }));
+  await page.goto(link());
+  await expect(page.getByRole("alert")).toContainText("Regimex сейчас отключён");
+  await expect(page.getByRole("button", { name: "Анализировать" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Скачать отчёт" })).toHaveCount(0);
+  const exportFile = await downloadText(page, "Скачать данные");
+  expect(exportFile.name).toBe("regimex-export.json");
+  expect(JSON.parse(exportFile.bytes.toString("utf8")).observations.length).toBeGreaterThan(0);
+});
+
 test("saved links, linked charts, missing values, zoom and CSV work at capacity one", async ({ page }) => {
   const peer = await installPeer(page);
   const errors = [];

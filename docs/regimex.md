@@ -46,6 +46,8 @@ points.
 | --- | --- |
 | The analysis failed or was cancelled | Read the reason if shown. **Повторить анализ** requests a new attempt. |
 | Trade reported that analysis requests are busy | Wait for the indicated delay and retry. Your selected attempt stays open. |
+| Regimex storage is full | Ask the administrator to free space or raise the quota for the account or connection. |
+| Regimex has no active model | Ask the Regimex administrator to publish a saved model, then retry the analysis. |
 | The response to a launch request was lost | Click **Повторить запрос запуска**. Trade repeats the same request so Regimex can return the job it accepted. |
 | Status updates paused | Click **Проверить состояние** to resume polling. |
 | The job finished but its charts did not load | Click **Повторить загрузку** to reload the preview. The saved report can still be downloaded when available. |
@@ -132,8 +134,14 @@ saved result with a freshly built export and compares their digests. The directi
 labels are predictions of the saved model. Measuring their accuracy on Trade
 requires a separate evaluation.
 
-Polling and history reads can reuse a verified export's identity for up to
-60 seconds. They still verify the remote snapshot for each returned analysis.
+Trade submits the export and an idempotency key together. Starting or retrying
+an analysis takes one upstream request. Polling and history each take one
+request and verify every returned snapshot digest against the local export,
+whose identity can be cached for up to 60 seconds. A preview or download also
+uses one request. Regimex returns the analysis, result and requested HTML
+together so Trade can check their identifiers, model, time grid and digest
+before serving them. The local JSON export is available when Regimex is offline
+or disabled.
 If completed events are edited directly in the database, restart the API before
 reading their analysis again. The simulator normally treats these runs as immutable.
 

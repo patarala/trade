@@ -41,7 +41,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
   if (!requestedAnalysisId && (view.status?.enabled === false || (!view.status && !view.error))) return null;
   const active = pending(analysis);
   const reportUnavailable = analysis?.state === "succeeded" && !analysis.report_available;
-  const canSubmit = view.status?.eligible && !active && analysis?.state !== "succeeded";
+  const canSubmit = view.status?.enabled && view.status.eligible && !active && analysis?.state !== "succeeded";
   const busy = view.loading || view.submitting;
   const badge = analysis?.state === "succeeded" ? "completed"
     : analysis?.state === "failed" ? "failed" : analysis?.state === "cancelled" ? "stopped" : "running";
@@ -65,7 +65,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
       </span>}
     </div>
 
-    {((view.status?.enabled && view.status.eligible) || (requestedAnalysisId && !view.status && view.loading))
+    {view.status?.enabled && view.status.eligible
       && <RegimexHistory api={api} selected={analysis} select={selectAnalysis} />}
     {requestedAnalysisId && view.loading && <p className="panel-note" role="status">Открываем сохранённый анализ…</p>}
     {view.status?.enabled === false && requestedAnalysisId && <p className="form-error" role="alert">Regimex сейчас отключён. Сохранённый анализ недоступен.</p>}

@@ -1,5 +1,6 @@
 """A real HTTP peer exercises time, framing, size and credential boundaries."""
 
+import json
 import os
 import shutil
 import socket
@@ -11,14 +12,25 @@ import time
 import unittest
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from pydantic import SecretStr
 
 from backend.app.integrations.regimex.client import RegimexClient, TransportFailure
 from backend.app.integrations.regimex.config import Connection
 from backend.app.integrations.regimex.errors import GatewayError
+
+
+def delivery_bytes(members, compression=ZIP_STORED):
+    target = BytesIO()
+    with ZipFile(target, "w", compression=compression) as archive:
+        for name, data in members:
+            archive.writestr(name, data)
+    return target.getvalue()
 
 
 class Peer(BaseHTTPRequestHandler):
@@ -97,6 +109,70 @@ class RegimexHTTPTests(unittest.TestCase):
         self.assertEqual(len(self.server.received), 1)
         self.assertNotIn("stolen", str(raised.exception))
 
+    def test_delivery_uses_one_request_and_applies_separate_member_limits(self):
+        analysis = {"name": "a" * 800}
+        result = {"observations": "b" * 900}
+        members = [("analysis.json", json.dumps(analysis)), ("result.json", json.dumps(result))]
+        identifier = str(uuid4())
+        self.server.headers = [("Content-Type", "application/zip")]
+        for include_report in (False, True):
+            html = b"<html>test</html>" if include_report else None
+            files = [*members, ("report.html", html)] if include_report else members
+            self.server.blocks = [delivery_bytes(files)]
+            delivery = self.client(response_bytes=1024).delivery(
+                identifier, include_report=include_report
+            )
+            self.assertEqual(
+                (delivery.analysis, delivery.result, delivery.report), (analysis, result, html)
+            )
+        path = f"/api/v1/integration/analyses/{identifier}/delivery"
+        self.assertEqual([row[1] for row in self.server.received], [path, path + "?include_report=true"])
+
+    def test_delivery_rejects_unexpected_members_encoding_and_oversized_files(self):
+        identifier = str(uuid4())
+        meta = ("analysis.json", b"{}")
+        result = ("result.json", b"{}")
+        html = ("report.html", b"<html>test</html>")
+        self.server.headers = [("Content-Type", "application/zip")]
+        with self.assertWarnsRegex(UserWarning, "Duplicate name"):
+            duplicate = delivery_bytes([meta, meta, html])
+        for body in (
+            b"not a zip", delivery_bytes([meta, result]), duplicate,
+            delivery_bytes([meta, result, ("other", b"")]),
+            delivery_bytes([meta, result, html], ZIP_DEFLATED),
+            delivery_bytes([meta, result, ("report.html", b"x" * 1025)]),
+            delivery_bytes([meta, result, ("report.html", b"\xff")]),
+            delivery_bytes([meta, ("result.json", b"[]"), html]),
+            delivery_bytes([meta, result, html])[:-1],
+        ):
+            self.server.blocks = [body]
+            with self.subTest(size=len(body)), self.assertRaises(GatewayError) as failure:
+                self.client(response_bytes=1024).delivery(identifier, include_report=True)
+            self.assertEqual(failure.exception.code, "invalid_analysis_response")
+        self.server.headers = [("Content-Type", "application/json")]
+        self.server.blocks = [delivery_bytes([meta, result, html])]
+        with self.assertRaises(GatewayError) as failure:
+            self.client().delivery(identifier, include_report=True)
+        self.assertEqual(failure.exception.code, "invalid_analysis_response")
+
+    def test_delivery_distinguishes_missing_analysis_from_pending_artifact(self):
+        for status, code, include_report, expected_code, expected_status in (
+            (409, "result_pending", False, "result_pending", 409),
+            (409, "result_pending", True, "report_pending", 409),
+            (404, "report_unavailable", True, "report_pending", 409),
+            (404, "not_found", True, "not_found", 404),
+        ):
+            self.server.status = status
+            self.server.blocks = [json.dumps({"error": {"code": code}}).encode()]
+            with (
+                self.subTest(code=code, report=include_report),
+                self.assertRaises(GatewayError) as raised,
+            ):
+                self.client().delivery(str(uuid4()), include_report=include_report)
+            self.assertEqual(
+                (raised.exception.status, raised.exception.code), (expected_status, expected_code)
+            )
+
     def test_rate_limit_preserves_only_bounded_retry_delay(self):
         self.server.status = 429
         self.server.headers += [("Retry-After", "12")]
@@ -107,6 +183,25 @@ class RegimexHTTPTests(unittest.TestCase):
         self.assertEqual(raised.exception.retry_after, 12)
         self.assertTrue(raised.exception.retryable)
         self.assertNotIn("secret", str(raised.exception))
+
+    def test_capacity_and_model_failures_expose_only_the_operator_action(self):
+        for status, code, action in (
+            (429, "storage_quota_exceeded", "free space"),
+            (409, "model_unavailable", "publish an active model"),
+            (409, "retry_not_available", "failed or cancelled"),
+        ):
+            self.server.status = status
+            self.server.blocks = [
+                json.dumps({"error": {"code": code, "message": "private diagnostic"}}).encode()
+            ]
+            with self.subTest(code=code), self.assertRaises(GatewayError) as raised:
+                self.client().json("POST", "/api/v1/integration/analysis-intake", payload={})
+            error = raised.exception
+            self.assertEqual((error.status, error.code), (status, code))
+            self.assertFalse(error.retryable)
+            self.assertIsNone(error.retry_after)
+            self.assertIn(action, str(error))
+            self.assertNotIn("private", str(error))
 
     def test_error_bodies_are_not_copied_to_the_simulator(self):
         for status in (401, 403, 404, 409, 422, 500):

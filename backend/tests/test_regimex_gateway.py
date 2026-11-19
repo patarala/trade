@@ -15,7 +15,7 @@ from backend.app.api.routes import regimex as routes
 from backend.app.core.security import create_access_token
 from backend.app.db.dependencies import get_db
 from backend.app.integrations.regimex.bindings import VerifiedExports
-from backend.app.integrations.regimex.client import UpstreamResponse
+from backend.app.integrations.regimex.delivery import Delivery
 from backend.app.integrations.regimex.errors import GatewayError
 from backend.app.integrations.regimex.export import build_export
 from backend.app.main import app
@@ -107,6 +107,7 @@ class AnalysisPeer:
             "source_id": source["source_id"],
             "run_id": source["run_id"],
             "source_snapshot_id": source["snapshot_id"],
+            "snapshot_sha256": self.export["content_sha256"],
             "instrument_ids": [item["instrument_id"] for item in self.export["instruments"]],
             "step_count": self.export["time_grid"]["step_count"],
             "result_available": False,
@@ -187,29 +188,34 @@ class AnalysisPeer:
                 "offset": offset,
                 **self.history_override,
             }
-        if (
-            path == "/api/v1/integration/snapshots"
-            or path == f"/api/v1/integration/snapshots/{self.snapshot_id}"
-        ):
-            return self.snapshot()
-        if path == "/api/v1/integration/analyses" and method == "POST":
+        if urlsplit(path).path == "/api/v1/integration/analysis-intake" and method == "POST":
+            assert payload == self.export
             if idempotency_key not in self.idempotency:
+                retry = parse_qs(urlsplit(path).query).get("retry_of")
+                if retry and self.analyses[retry[0]]["job"]["state"] not in {"failed", "cancelled"}:
+                    raise GatewayError("retry_not_available", "Retry unavailable.", 409)
                 self.idempotency[idempotency_key] = self.create_analysis()["analysis_id"]
-            return copy.deepcopy(self.analyses[self.idempotency[idempotency_key]])
+            return {
+                "snapshot": self.snapshot(),
+                "analysis": copy.deepcopy(self.analyses[self.idempotency[idempotency_key]]),
+            }
         identifier = path.split("/")[5]
         if identifier not in self.analyses:
             raise GatewayError("not_found", "Analysis was not found.", 404)
-        return (
-            self.result(identifier)
-            if path.endswith("/result")
-            else copy.deepcopy(self.analyses[identifier])
-        )
+        return copy.deepcopy(self.analyses[identifier])
 
-    def request(self, method, path):
-        self.calls.append((method, path, None, None))
-        return UpstreamResponse(
-            "text/html; charset=utf-8", b"<!doctype html><title>Analysis report</title>"
-        )
+    def delivery(self, identifier, *, include_report):
+        path = f"/api/v1/integration/analyses/{identifier}/delivery"
+        self.calls.append(("GET", path, None, None))
+        analysis = self.analyses.get(identifier)
+        if analysis is None:
+            raise GatewayError("not_found", "Analysis was not found.", 404)
+        if not analysis["result_available"]:
+            raise GatewayError("analysis_conflict", "Result is not ready.", 409)
+        if include_report and not analysis["report_available"]:
+            raise GatewayError("not_found", "Report was not found.", 404)
+        report = b"<!doctype html><title>Analysis report</title>" if include_report else None
+        return Delivery(copy.deepcopy(analysis), self.result(identifier), report)
 
 
 class RegimexGatewayTests(unittest.TestCase):
@@ -287,7 +293,11 @@ class RegimexGatewayTests(unittest.TestCase):
         status, _, content = self.request()
         self.assertEqual(status, 200)
         self.assertIsNone(json.loads(content)["analysis"])
+        before = len(self.peer.calls)
         first, repeated = self.submit(), self.submit()
+        self.assertEqual(len(self.peer.calls) - before, 2)
+        self.assertEqual(self.peer.calls[-1], self.peer.calls[-2])
+        self.assertEqual(self.peer.calls[-1][1], "/api/v1/integration/analysis-intake")
         self.assertEqual(first["analysis_id"], repeated["analysis_id"])
         self.assertEqual(len(self.peer.analyses), 1)
         self.assertEqual(first["run_id"], 1)
@@ -295,8 +305,10 @@ class RegimexGatewayTests(unittest.TestCase):
         status, _, content = self.request()
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(content)["analysis"]["state"], "succeeded")
+        before = len(self.peer.calls)
         status, headers, content = self.request(suffix=f"/analyses/{first['analysis_id']}/report")
         self.assertEqual(status, 200)
+        self.assertEqual(len(self.peer.calls) - before, 1)
         self.assertIn(b"attachment", headers[b"content-disposition"])
         self.assertIn(b"sandbox", headers[b"content-security-policy"])
         self.assertIn(b"Analysis report", content)
@@ -314,14 +326,23 @@ class RegimexGatewayTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["model_version_id"], "model-1")
         self.assertEqual(page["items"][0]["created_at"], "2026-01-01T12:00:00+00:00")
         self.assertIn(b"no-store", headers[b"cache-control"])
-        snapshot_calls = [call for call in self.peer.calls[before:] if "/snapshots/" in call[1]]
-        self.assertEqual(len(snapshot_calls), 1)
+        self.assertEqual(len(self.peer.calls) - before, 1)
         status, _, content = self.request(suffix="/analyses", query="&limit=2&offset=2")
         self.assertEqual(status, 200)
         page = json.loads(content)
         self.assertEqual([item["analysis_id"] for item in page["items"]], identifiers[:1])
         self.assertFalse(page["has_more"])
         self.assertEqual(self.request(suffix=f"/analyses/{identifiers[0]}/report")[0], 200)
+
+    def test_intake_response_must_bind_the_exact_snapshot_to_the_accepted_job(self):
+        for field, wrong in (
+            ("snapshot_id", str(uuid4())), ("content_sha256", "f" * 64),
+            ("run_id", "2"), ("source_id", "other"), ("source_snapshot_id", "wrong"),
+        ):
+            self.peer.snapshot_override = {field: wrong}
+            with self.subTest(field=field):
+                self.assertEqual(self.request("POST", "/analyses", {})[0], 502)
+        self.assertEqual(len(self.peer.analyses), 1)
 
     def test_history_rejects_wrong_bindings_duplicate_ids_and_invalid_pages(self):
         item = self.peer.create_analysis()
@@ -339,7 +360,7 @@ class RegimexGatewayTests(unittest.TestCase):
                 self.assertNotIn(item["analysis_id"].encode(), content)
                 self.assertNotIn(b"private diagnostic", content)
         self.peer.history_override = {}
-        self.peer.snapshot_override = {"content_sha256": "0" * 64}
+        item["snapshot_sha256"] = "0" * 64
         self.assertEqual(self.request(suffix="/analyses")[0], 502)
 
     def test_history_limits_are_checked_before_upstream_requests(self):
@@ -414,17 +435,16 @@ class RegimexGatewayTests(unittest.TestCase):
         for field, wrong in (
             ("source_id", "another-source"),
             ("run_id", "2"),
-            ("content_sha256", "0" * 64),
+            ("snapshot_sha256", "0" * 64),
             ("source_snapshot_id", "another-snapshot"),
         ):
-            self.peer.snapshot_override = {field: wrong}
-            before = len(self.peer.calls)
+            original = self.peer.analyses[identifier][field]
+            self.peer.analyses[identifier][field] = wrong
             with self.subTest(field=field):
-                self.assertEqual(self.request(suffix=f"/analyses/{identifier}/report")[0], 502)
-                self.assertFalse(
-                    any(call[1].endswith("/report") for call in self.peer.calls[before:])
-                )
-        self.peer.snapshot_override = {}
+                status, _, body = self.request(suffix=f"/analyses/{identifier}/report")
+                self.assertEqual(status, 502)
+                self.assertNotIn(b"Analysis report", body)
+            self.peer.analyses[identifier][field] = original
         self.peer.analyses[identifier]["run_id"] = "2"
         self.assertEqual(self.request()[0], 502)
 
@@ -440,13 +460,11 @@ class RegimexGatewayTests(unittest.TestCase):
             {"class_names": ["growth", "sideways", "decline"]},
         ):
             self.peer.result_override = replacement
-            before = len(self.peer.calls)
             with self.subTest(fields=list(replacement)):
                 self.assertEqual(self.request(suffix=f"/analyses/{identifier}/result")[0], 502)
-                self.assertEqual(self.request(suffix=f"/analyses/{identifier}/report")[0], 502)
-                self.assertFalse(
-                    any(call[1].endswith("/report") for call in self.peer.calls[before:])
-                )
+                status, _, body = self.request(suffix=f"/analyses/{identifier}/report")
+                self.assertEqual(status, 502)
+                self.assertNotIn(b"Analysis report", body)
 
     def test_failed_retry_is_explicit_and_idempotent(self):
         first = self.submit()
@@ -467,8 +485,14 @@ class RegimexGatewayTests(unittest.TestCase):
         self.assertEqual(
             json.loads(content)["analysis"]["failure"]["code"], "infrastructure_failure"
         )
+        before = len(self.peer.calls)
         retried = self.submit({"retry_of": identifier})
         repeated = self.submit({"retry_of": identifier})
+        self.assertEqual(len(self.peer.calls) - before, 2)
+        self.assertEqual(self.peer.calls[-1], self.peer.calls[-2])
+        self.assertEqual(
+            self.peer.calls[-1][1], f"/api/v1/integration/analysis-intake?retry_of={identifier}"
+        )
         self.assertNotEqual(retried["analysis_id"], identifier)
         self.assertEqual(retried, repeated)
         self.assertEqual(len(self.peer.analyses), 2)
@@ -598,7 +622,7 @@ class RegimexGatewayTests(unittest.TestCase):
         self.assertEqual(headers[b"content-type"], b"application/json")
         self.assertIn(b"no-store", headers[b"cache-control"])
         self.assertEqual(self.request(suffix=f"/analyses/{identifier}/preview", token=self.other_token)[0], 404)
-        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        self.peer.analyses[identifier]["snapshot_sha256"] = "f" * 64
         self.assertEqual(self.request(suffix=f"/analyses/{identifier}/preview")[0], 502)
 
     def test_preview_bounds_combined_response_before_publication(self):
@@ -620,14 +644,14 @@ class RegimexGatewayTests(unittest.TestCase):
                            f"/analyses/{identifier}/report", "/export"):
                 self.assertEqual(self.request(suffix=suffix)[0], 200)
             self.assertEqual(build.call_count, 5)
-        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        self.peer.analyses[identifier]["snapshot_sha256"] = "f" * 64
         for suffix in ("", "/analyses", f"/analyses/{identifier}"):
             self.assertEqual(self.request(suffix=suffix)[0], 502)
         self.assertEqual(self.request(suffix=f"/analyses/{identifier}", token=self.other_token)[0], 404)
 
     def test_failed_remote_binding_is_not_cached(self):
         identifier = self.submit()["analysis_id"]
-        self.peer.snapshot_override["content_sha256"] = "f" * 64
+        self.peer.analyses[identifier]["snapshot_sha256"] = "f" * 64
         with patch.object(routes, "build_export", wraps=build_export) as build:
             for _ in range(2):
                 self.assertEqual(self.request(suffix=f"/analyses/{identifier}")[0], 502)

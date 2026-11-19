@@ -13,12 +13,21 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .config import IDENTITY_PATTERN, MAX_RESPONSE_BYTES, Connection
+from .delivery import ZIP_OVERHEAD, Delivery, member_limits, read_delivery
 from .errors import GatewayError, invalid_response, unavailable
 from .json import json_bytes, strict_json
 
 _RESOLVERS = threading.BoundedSemaphore(16)
 _PATH = re.compile(r"/api/v1/integration/[A-Za-z0-9/-]+")
 _HISTORY = re.compile(r"/api/v1/integration/analyses\?limit=([0-9]{1,2})(?:&offset=([0-9]{1,5}))?")
+_RETRY = re.compile(
+    r"/api/v1/integration/analysis-intake\?retry_of="
+    r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+)
+_DELIVERY = re.compile(
+    r"/api/v1/integration/analyses/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+    r"/delivery(?:\?include_report=(true|false))?"
+)
 _LOG = logging.getLogger(__name__)
 
 
@@ -45,6 +54,25 @@ class UpstreamStatusFailure(GatewayError):
 
 class _ResolutionFailure(OSError):
     pass
+
+
+def _upstream_error_code(response: http.client.HTTPResponse) -> str | None:
+    media_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+    if response.status not in {404, 409, 429} or media_type != "application/json":
+        return None
+    # Recognize machine codes without exposing upstream text or buffering a large body.
+    try:
+        data = response.read(4097)
+        if len(data) > 4096:
+            return None
+        body = strict_json(data)
+    except (ValueError, RecursionError, OSError, http.client.HTTPException):
+        return None
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        code = body["error"].get("code")
+        if isinstance(code, str):
+            return code
+    return None
 
 
 def _addresses(host: str, port: int, deadline: float) -> list[tuple]:
@@ -112,11 +140,15 @@ class _ConfiguredClient:
             raise TransportFailure("timeout")
         started = time.monotonic()
         settings = self.connection
+        limit = settings.response_bytes
+        delivery = _DELIVERY.fullmatch(path)
+        if delivery:
+            limit = sum(member_limits(limit, delivery[1] == "true").values()) + ZIP_OVERHEAD
         parsed = urlsplit(settings.url)
         assert parsed.hostname is not None
         connection = http.client.HTTPConnection(parsed.hostname, parsed.port)
         headers = {
-            "Accept": "application/json, text/html",
+            "Accept": "application/json, application/zip",
             "Accept-Encoding": "identity",
             **self._credentials(path),
         }
@@ -173,7 +205,7 @@ class _ConfiguredClient:
             self._timeout(transport)
             response = connection.getresponse()
             if response.status not in ({200} if method == "GET" else {200, 201, 202}):
-                self._status_error(response)
+                self._status_error(response, path)
             if response.getheader("Content-Encoding", "identity").lower() != "identity":
                 raise invalid_response()
             lengths = response.headers.get_all("Content-Length", [])
@@ -183,16 +215,16 @@ class _ConfiguredClient:
             if lengths and not re.fullmatch(r"[0-9]+", lengths[0]):
                 raise invalid_response()
             expected = int(lengths[0]) if lengths else None
-            if expected is not None and expected > settings.response_bytes:
+            if expected is not None and expected > limit:
                 raise invalid_response()
             data = bytearray()
             while not response.isclosed():
                 self._timeout(transport)
-                block = response.read1(min(65536, settings.response_bytes + 1 - len(data)))
+                block = response.read1(min(65536, limit + 1 - len(data)))
                 if not block:
                     break
                 data.extend(block)
-                if len(data) > settings.response_bytes:
+                if len(data) > limit:
                     raise invalid_response()
             if expected is not None and expected != len(data):
                 raise invalid_response()
@@ -241,15 +273,41 @@ class _ConfiguredClient:
         transport.settimeout(min(limit or self.connection.read_timeout, remaining))
 
     @staticmethod
-    def _status_error(response: http.client.HTTPResponse) -> None:
+    def _status_error(response: http.client.HTTPResponse, path: str) -> None:
         status = response.status
-        if status == 404:
+        error_code = _upstream_error_code(response)
+        delivery = _DELIVERY.fullmatch(path)
+        if delivery and (
+            (status == 409 and error_code == "result_pending")
+            or (status == 404 and error_code == "report_unavailable")
+        ):
+            artifact = "report" if delivery[1] == "true" else "result"
+            error = GatewayError(
+                f"{artifact}_pending", f"The analysis {artifact} is not ready.", 409
+            )
+        elif status == 404:
             error = GatewayError("not_found", "The analysis resource was not found.", 404)
+        elif status == 409 and error_code == "model_unavailable":
+            error = GatewayError(
+                "model_unavailable",
+                "Ask the Regimex administrator to publish an active model before starting analysis.",
+                409,
+            )
+        elif status == 409 and error_code == "retry_not_available":
+            error = GatewayError(
+                "retry_not_available", "Only failed or cancelled analyses can be retried.", 409
+            )
         elif status == 409:
             error = GatewayError(
                 "analysis_conflict",
                 "The analysis is not available in its current state.",
                 409,
+            )
+        elif status == 429 and error_code == "storage_quota_exceeded":
+            error = GatewayError(
+                "storage_quota_exceeded",
+                "Regimex storage is full. Ask the administrator to free space or raise the quota.",
+                429,
             )
         elif status == 429:
             raw = response.getheader("Retry-After", "")
@@ -309,7 +367,11 @@ class RegimexClient(_ConfiguredClient):
         self.run_id = run_id
 
     def _allows(self, method: str, path: str) -> bool:
+        if _DELIVERY.fullmatch(path):
+            return method == "GET"
         if _PATH.fullmatch(path):
+            return True
+        if method == "POST" and _RETRY.fullmatch(path):
             return True
         history = _HISTORY.fullmatch(path)
         return (
@@ -318,6 +380,17 @@ class RegimexClient(_ConfiguredClient):
             and 1 <= int(history[1]) <= 21
             and (history[2] is None or int(history[2]) <= 10000)
         )
+
+    def delivery(self, analysis_id: str, *, include_report: bool) -> Delivery:
+        path = f"/api/v1/integration/analyses/{analysis_id}/delivery"
+        if include_report:
+            path += "?include_report=true"
+        if not _DELIVERY.fullmatch(path):
+            raise ValueError("Invalid internal analysis identifier")
+        response = self.request("GET", path)
+        if response.content_type.split(";", 1)[0].strip().lower() != "application/zip":
+            raise invalid_response()
+        return read_delivery(response.body, member_limits(self.connection.response_bytes, include_report))
 
     def _credentials(self, path: str) -> dict[str, str]:
         return {

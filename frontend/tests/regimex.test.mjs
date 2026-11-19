@@ -81,7 +81,28 @@ test("disabled integration performs no submission or polling", async () => {
   assert.equal(p.controller.getSnapshot().status.enabled, false);
   assert.equal(submissions, 0);
   assert.equal(p.next(), undefined);
+  await p.controller.download("report");
+  await p.controller.download("export");
+  assert.deepEqual(p.downloads.map((download) => download.name), ["regimex-export.json"]);
   p.controller.stop();
+});
+
+test("a quota or missing deployment error keeps the selected analysis available", async () => {
+  for (const [code, statusCode] of [["model_unavailable", 409], ["storage_quota_exceeded", 429]]) {
+    const failed = info("failed");
+    const p = panel({
+      status: async () => status(failed),
+      submit: async () => { throw new RegimexRequestError("Ask the administrator", statusCode, null, code); },
+    }, failed.analysis_id);
+    p.controller.start();
+    await settled();
+    await p.controller.submit();
+    const view = p.controller.getSnapshot();
+    assert.equal(view.status.analysis.analysis_id, failed.analysis_id);
+    assert.equal(view.error, "Ask the administrator");
+    assert.equal(view.confirmationRequired, false);
+    p.controller.stop();
+  }
 });
 
 test("reopening completed analysis restores report without submitting another job", async () => {

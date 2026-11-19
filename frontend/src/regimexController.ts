@@ -242,9 +242,9 @@ export class RegimexController {
 
   async download(kind: DownloadKind) {
     const status = this.state.status;
-    if (!this.active || this.state.downloading || !status?.enabled || !status.eligible) return;
+    if (!this.active || this.state.downloading || !status?.eligible) return;
     const analysis = status.analysis;
-    if (kind === "report" && (!analysis?.report_available || analysis.state !== "succeeded")) return;
+    if (kind === "report" && (!status.enabled || !analysis?.report_available || analysis.state !== "succeeded")) return;
     const lifetime = this.lifetime;
     this.update({ downloading: kind, error: "" });
     try {

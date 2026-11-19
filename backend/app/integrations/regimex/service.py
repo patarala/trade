@@ -8,7 +8,8 @@ from datetime import datetime
 from uuid import UUID
 
 from .client import RegimexClient
-from .errors import GatewayError, invalid_response
+from .delivery import Delivery
+from .errors import invalid_response
 from .json import json_bytes
 
 _STATES = {"queued", "running", "cancel_requested", "succeeded", "failed", "cancelled"}
@@ -74,6 +75,7 @@ def _analysis(value: dict, export: dict, expected: str | None = None) -> dict:
                 "run_id": source["run_id"],
                 "source_snapshot_id": source["snapshot_id"],
                 "instrument_ids": [item["instrument_id"] for item in export["instruments"]],
+                "snapshot_sha256": export["content_sha256"],
                 "step_count": export["time_grid"]["step_count"],
             }.items()
         )
@@ -157,9 +159,6 @@ class AnalysisGateway:
 
     def _bound_value(self, value: dict, expected: str | None = None) -> dict:
         value = _analysis(value, self.export, expected)
-        identifier = value["snapshot_id"]
-        snapshot = self.client.json("GET", f"/api/v1/integration/snapshots/{identifier}")
-        _require(_snapshot(snapshot, self.export) == identifier)
         self._verified()
         return value
 
@@ -185,19 +184,13 @@ class AnalysisGateway:
         _require(isinstance(items, list) and len(items) <= requested)
         _require(type(page.get("limit")) is int and page["limit"] == requested)
         _require(type(page.get("offset")) is int and page["offset"] == offset)
-        analyses, snapshots = set(), set()
+        analyses = set()
         for item in items:
             _require(isinstance(item, dict))
             _analysis(item, self.export)
-            identifier, snapshot_id = item["analysis_id"], item["snapshot_id"]
+            identifier = item["analysis_id"]
             _require(identifier not in analyses)
             analyses.add(identifier)
-            if snapshot_id not in snapshots:
-                snapshot = self.client.json(
-                    "GET", f"/api/v1/integration/snapshots/{snapshot_id}"
-                )
-                _require(_snapshot(snapshot, self.export) == snapshot_id)
-                snapshots.add(snapshot_id)
         if items:
             self._verified()
         return {
@@ -206,20 +199,6 @@ class AnalysisGateway:
         }
 
     def submit(self, retry_of: str | None = None) -> dict:
-        if retry_of is not None:
-            previous = self.bound(retry_of)
-            if previous["job"]["state"] not in {"failed", "cancelled"}:
-                raise GatewayError(
-                    "retry_not_available",
-                    "Only failed or cancelled analyses can be retried.",
-                    409,
-                )
-        snapshot = self.client.json(
-            "POST",
-            "/api/v1/integration/snapshots",
-            payload=self.export,
-        )
-        snapshot_id = _snapshot(snapshot, self.export)
         # Replaying a lost response must find the same job. Starting another
         # attempt after a failure changes the key through the previous analysis ID.
         operation = {
@@ -231,21 +210,23 @@ class AnalysisGateway:
             "retry_of": retry_of,
         }
         key = "trade-" + hashlib.sha256(json_bytes(operation)).hexdigest()
-        value = self.client.json(
-            "POST",
-            "/api/v1/integration/analyses",
-            payload={"snapshot_id": snapshot_id, "model_version_id": "active"},
-            idempotency_key=key,
-        )
+        path = "/api/v1/integration/analysis-intake"
+        if retry_of is not None:
+            path += f"?retry_of={_uuid(retry_of)}"
+        accepted = self.client.json("POST", path, payload=self.export, idempotency_key=key)
+        snapshot, value = accepted.get("snapshot"), accepted.get("analysis")
+        _require(isinstance(snapshot, dict) and isinstance(value, dict))
         _analysis(value, self.export)
-        _require(value["snapshot_id"] == snapshot_id)
+        _require(value["snapshot_id"] == _snapshot(snapshot, self.export))
         return value
 
-    def result(self, analysis_id: str, *, analysis: dict | None = None) -> dict:
-        analysis = analysis if analysis is not None else self.bound(analysis_id)
-        if not analysis["result_available"]:
-            raise GatewayError("result_pending", "The analysis result is not ready.", 409)
-        result = self.client.json("GET", f"/api/v1/integration/analyses/{analysis_id}/result")
+    def _delivery(self, analysis_id: str, *, include_report: bool) -> Delivery:
+        delivery = self.client.delivery(_uuid(analysis_id), include_report=include_report)
+        analysis = _analysis(delivery.analysis, self.export, analysis_id)
+        _require(
+            analysis["result_available"] and (not include_report or analysis["report_available"])
+        )
+        result = delivery.result
         _require(
             all(
                 _same_json(result.get(key), value)
@@ -263,7 +244,10 @@ class AnalysisGateway:
             )
         )
         self._result_grid(result)
-        return result
+        return delivery
+
+    def result(self, analysis_id: str) -> dict:
+        return self._delivery(analysis_id, include_report=False).result
 
     def _result_grid(self, result: dict) -> None:
         sequences = result.get("sequences")
@@ -311,14 +295,7 @@ class AnalysisGateway:
             _require(previous == count)
 
     def report(self, analysis_id: str) -> bytes:
-        analysis = self.bound(analysis_id)
-        if not analysis["report_available"]:
-            raise GatewayError("report_pending", "The analysis report is not ready.", 409)
-        self.result(analysis_id, analysis=analysis)
-        response = self.client.request("GET", f"/api/v1/integration/analyses/{analysis_id}/report")
-        _require(response.content_type.split(";", 1)[0].strip().lower() == "text/html")
-        try:
-            _require(bool(response.body.decode("utf-8").strip()))
-        except UnicodeError:
-            raise invalid_response() from None
-        return response.body
+        report = self._delivery(analysis_id, include_report=True).report
+        if report is None:
+            raise invalid_response()
+        return report

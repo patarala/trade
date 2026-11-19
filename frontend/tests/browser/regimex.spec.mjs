@@ -28,6 +28,37 @@ test("a saved link still exports the run when Regimex is disabled", async ({ pag
   expect(JSON.parse(exportFile.bytes.toString("utf8")).observations.length).toBeGreaterThan(0);
 });
 
+test("the ordinary monitor offers a local export with Regimex disabled or offline", async ({ page }) => {
+  await installPeer(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  let disabled = true;
+  await page.route("**/regimex?*", (route) => route.fulfill(disabled
+    ? { json: { enabled: false, eligible: true, analysis: null, reason: null } }
+    : { status: 503, json: { detail: "Offline", code: "analysis_unavailable", export_available: true } }));
+  await page.goto("/tests/browser/index.html");
+  await expect(page.getByRole("region", { name: "Данные запуска" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Анализировать" })).toHaveCount(0);
+  disabled = false;
+  await page.reload();
+  await expect(page.getByRole("alert")).toBeVisible();
+  const file = await downloadText(page, "Скачать данные");
+  expect(JSON.parse(file.bytes.toString("utf8")).observations.length).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Проверить состояние" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Скачать отчёт" })).toHaveCount(0);
+  await expectNoOverflow(page);
+});
+
+test("a first overview without local authorization cannot advertise downloads", async ({ page }) => {
+  for (const status of [401, 403, 404, 503]) {
+    await page.route("**/regimex?*", (route) => route.fulfill({ status, json: { detail: "Unavailable" } }));
+    await page.goto("/tests/browser/index.html");
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Скачать данные" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Скачать отчёт" })).toHaveCount(0);
+    await page.unroute("**/regimex?*");
+  }
+});
+
 test("saved links, linked charts, missing values, zoom and CSV work at capacity one", async ({ page }) => {
   const peer = await installPeer(page);
   const errors = [];

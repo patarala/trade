@@ -74,13 +74,23 @@ def _analysis(value: dict, export: dict, expected: str | None = None) -> dict:
                 "source_id": source["source_id"],
                 "run_id": source["run_id"],
                 "source_snapshot_id": source["snapshot_id"],
-                "instrument_ids": [item["instrument_id"] for item in export["instruments"]],
                 "snapshot_sha256": export["content_sha256"],
-                "step_count": export["time_grid"]["step_count"],
             }.items()
         )
     )
-    _require(type(value.get("step_count")) is int)
+    # A saved snapshot can predate display metadata. Its verified digest still
+    # binds the entire export, and delivery checks the result grid independently.
+    instruments = value.get("instrument_ids")
+    steps = value.get("step_count")
+    _require("step_count" in value)
+    _require(
+        (instruments == [] and steps is None)
+        or (
+            instruments == [item["instrument_id"] for item in export["instruments"]]
+            and type(steps) is int
+            and steps == export["time_grid"]["step_count"]
+        )
+    )
     job = value.get("job")
     _require(isinstance(job, dict))
     _uuid(job.get("operation_id"))

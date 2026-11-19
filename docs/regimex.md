@@ -18,7 +18,9 @@ for offline use. To try it with a saved model on your machine, start with the
    **Все инструменты** shows both charts with the same cursor and zoom.
 4. Use **Анализ** to reopen an earlier attempt for this run. Each entry shows the
    model, time and status. Bookmark **Ссылка на анализ** to reopen the same
-   attempt and instrument when signed in as the run's owner.
+   attempt and instrument when signed in as the run's owner. Refreshing the
+   monitor keeps the first attempt it displayed, even when another tab starts a
+   newer one. Choose the newer attempt from the list to switch.
 
 **Нет сделок** and **Недостаточно данных** mark intervals without a predicted
 direction. Chart steps start at 1. **Изменение, %** uses the first available
@@ -35,6 +37,9 @@ every step. The inactive-step share uses steps with known counts as its denomina
 | **Интервалы CSV** | All saved intervals for the selected instrument, including intervals outside the current zoom |
 | **Наблюдения CSV** | Observations for the selected instrument within the displayed range |
 
+**Скачать данные** also works when Regimex is unavailable. When the connection
+is disabled, the monitor shows the download in **Данные запуска**.
+
 The CSV files include the analysis, snapshot, model and instrument identifiers.
 A zero-based interval `[0, 10)` covers display steps 1 through 10. Empty numeric
 cells mean unavailable values. The files use UTF-8, comma separators and decimal
@@ -48,6 +53,7 @@ points.
 | Trade reported that analysis requests are busy | Wait for the indicated delay and retry. Your selected attempt stays open. |
 | Regimex storage is full | Ask the administrator to free space or raise the quota for the account or connection. |
 | Regimex has no active model | Ask the Regimex administrator to publish a saved model, then retry the analysis. |
+| The connection is disabled or Regimex rejected its credentials | Ask the Trade administrator to check the connection, then retry. |
 | The response to a launch request was lost | Click **Повторить запрос запуска**. Trade repeats the same request so Regimex can return the job it accepted. |
 | Status updates paused | Click **Проверить состояние** to resume polling. |
 | The job finished but its charts did not load | Click **Повторить загрузку** to reload the preview. The saved report can still be downloaded when available. |
@@ -154,7 +160,7 @@ Trade user's bearer token and a positive `run_id` query parameter.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/regimex` | Connection availability, run eligibility and latest analysis |
+| GET | `/regimex` | Connection availability, run eligibility and latest analysis, or the selected attempt with `analysis_id` |
 | GET | `/regimex/run` | Resolve the run in a saved analysis link |
 | GET | `/regimex/export` | Download observations, including when the Regimex connection is disabled |
 | GET | `/regimex/analyses` | List saved analyses. The response includes `items`, `limit` (1–20), `offset` (0–10000) and `has_more`. |
@@ -163,6 +169,10 @@ Trade user's bearer token and a positive `run_id` query parameter.
 | GET | `/regimex/analyses/{analysis_id}/preview` | Read the result and observations together, up to 16 MiB |
 | GET | `/regimex/analyses/{analysis_id}/result` | Download result JSON |
 | GET | `/regimex/analyses/{analysis_id}/report` | Download the HTML report |
+
+An overview error can include `export_available: true` when Trade has verified
+the local run but Regimex cannot serve its metadata. Clients can offer
+`/regimex/export` while status reads are unavailable.
 
 ## Tests
 

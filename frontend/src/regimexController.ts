@@ -10,6 +10,8 @@ export type AnalysisPanelState = {
   loading: boolean;
   submitting: boolean;
   downloading: DownloadKind | null;
+  exportAvailable: boolean;
+  downloadError: string;
   error: string;
   confirmationRequired: boolean;
   pollingPaused: boolean;
@@ -30,6 +32,8 @@ function resourceUnavailable(cause: unknown): boolean {
   return cause instanceof RegimexRequestError && [401, 403, 404].includes(cause.status);
 }
 
+const submitRefusals = new Set(["analysis_busy", "analysis_disabled", "analysis_endpoint_unavailable", "connection_access_denied"]);
+
 function previewTarget(status: RegimexStatus | null): string | null {
   return status?.enabled && status.eligible && status.analysis?.state === "succeeded"
     && status.analysis.result_available ? status.analysis.analysis_id : null;
@@ -48,7 +52,7 @@ export class RegimexController {
   private listeners = new Set<() => void>();
   private state: AnalysisPanelState = {
     status: null, loading: true, submitting: false, downloading: null,
-    error: "", confirmationRequired: false, pollingPaused: false,
+    error: "", exportAvailable: false, downloadError: "", confirmationRequired: false, pollingPaused: false,
     preview: null, previewLoading: false, previewError: null,
   };
   private lifetime = new AbortController();
@@ -82,7 +86,7 @@ export class RegimexController {
   private setStatus(status: RegimexStatus | null, patch: Partial<AnalysisPanelState> = {}) {
     const identityChanged = previewTarget(status) !== previewTarget(this.state.status);
     if (identityChanged) this.cancelPreview();
-    this.update({ ...patch, status,
+    this.update({ ...patch, status, exportAvailable: status?.eligible ?? false, downloadError: "",
       ...(identityChanged ? { preview: null, previewLoading: false, previewError: null } : {}),
     });
     if (previewTarget(status) && !this.state.preview && !this.state.previewLoading && !this.state.previewError) {
@@ -143,9 +147,10 @@ export class RegimexController {
     this.request?.abort();
     this.request = new AbortController();
     const generation = ++this.generation;
+    const signal = AbortSignal.any([this.lifetime.signal, this.request.signal]);
     return {
-      signal: AbortSignal.any([this.lifetime.signal, this.request.signal]),
-      current: () => this.active && generation === this.generation,
+      signal,
+      current: () => this.active && !signal.aborted && generation === this.generation,
     };
   }
 
@@ -158,6 +163,7 @@ export class RegimexController {
     try {
       const status = await this.client.status(request.signal, this.selectedAnalysisId);
       if (!request.current()) return;
+      if (status.analysis) this.selectedAnalysisId = status.analysis.analysis_id;
       this.setStatus(status, { loading: false });
       this.pollLater();
     } catch (cause) {
@@ -173,7 +179,8 @@ export class RegimexController {
       this.lifetime = new AbortController();
       this.setStatus(null, { ...patch, submitting: false, downloading: null, confirmationRequired: false });
     } else {
-      this.update(patch);
+      this.update({ ...patch, exportAvailable: this.state.exportAvailable
+        || (cause instanceof RegimexRequestError && cause.exportAvailable) });
     }
   }
 
@@ -229,7 +236,7 @@ export class RegimexController {
       // An explicit refusal leaves no new job. After an earlier lost response,
       // only a successful replay can identify the accepted attempt.
       const rejected = cause instanceof RegimexRequestError
-        && (cause.code === "analysis_busy" || cause.code === "analysis_endpoint_unavailable");
+        && cause.code !== null && submitRefusals.has(cause.code);
       const uncertain = this.state.confirmationRequired || !(cause instanceof RegimexRequestError)
         || (cause.status >= 500 && !rejected);
       this.update({ submitting: false, confirmationRequired: uncertain, error: uncertain
@@ -239,18 +246,21 @@ export class RegimexController {
 
   async download(kind: DownloadKind) {
     const status = this.state.status;
-    if (!this.active || this.state.downloading || !status?.eligible) return;
-    const analysis = status.analysis;
-    if (kind === "report" && (!status.enabled || !analysis?.report_available || analysis.state !== "succeeded")) return;
+    if (!this.active || this.state.downloading) return;
+    const analysis = status?.analysis;
+    if (kind === "export" && !this.state.exportAvailable) return;
+    if (kind === "report" && (!status?.enabled || !status.eligible || !analysis?.report_available || analysis.state !== "succeeded")) return;
     const lifetime = this.lifetime;
-    this.update({ downloading: kind, error: "" });
+    this.update({ downloading: kind, downloadError: "" });
     try {
       const blob = await this.client.download(kind, analysis?.analysis_id ?? null, lifetime.signal);
       if (!this.active || lifetime.signal.aborted) return;
       const filename = kind === "report" ? `regimex-${analysis!.analysis_id}.html` : "regimex-export.json";
       this.saveFile(blob, filename);
     } catch (cause) {
-      if (this.active && !lifetime.signal.aborted) this.update({ error: message(cause) });
+      if (!this.active || lifetime.signal.aborted) return;
+      if (resourceUnavailable(cause)) this.statusFailed(cause);
+      else this.update({ downloadError: message(cause) });
     } finally {
       if (this.active && !lifetime.signal.aborted) this.update({ downloading: null });
     }

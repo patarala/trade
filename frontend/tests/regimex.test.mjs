@@ -87,8 +87,9 @@ test("disabled integration performs no submission or polling", async () => {
   p.controller.stop();
 });
 
-test("a quota or missing deployment error keeps the selected analysis available", async () => {
-  for (const [code, statusCode] of [["model_unavailable", 409], ["storage_quota_exceeded", 429]]) {
+test("an explicit refusal keeps the selected analysis available without an unconfirmed launch", async () => {
+  for (const [code, statusCode] of [["model_unavailable", 409], ["storage_quota_exceeded", 429],
+    ["analysis_disabled", 503], ["connection_access_denied", 503], ["analysis_endpoint_unavailable", 503]]) {
     const failed = info("failed");
     const p = panel({
       status: async () => status(failed),
@@ -166,6 +167,29 @@ test("leaving a saved analysis aborts its outstanding identity check", async () 
   assert.equal(p.controller.getSnapshot().status, null);
 });
 
+test("the monitor pins the first analysis it finds and follows an accepted retry", async () => {
+  let latest = null;
+  const ids = [];
+  const p = panel({
+    status: async (_signal, id) => {
+      ids.push(id);
+      return status(id || latest ? info("failed", id ?? latest) : null);
+    },
+    submit: async (retryOf) => { assert.equal(retryOf, firstId); return info("queued", secondId); },
+  });
+  p.controller.start();
+  await settled();
+  latest = firstId;
+  await p.controller.refresh();
+  latest = secondId;
+  await p.controller.refresh();
+  assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
+  await p.controller.submit();
+  await p.controller.refresh();
+  assert.deepEqual(ids, [null, null, firstId, secondId]);
+  p.controller.stop();
+});
+
 test("a lost initial acknowledgement can be recovered with the same submission", async () => {
   const submissions = [];
   const p = panel({
@@ -200,7 +224,8 @@ test("a rejected historical retry stays selected; an uncertain retry resolves on
     },
     submit: async (retryOf) => {
       submissions.push(retryOf);
-      if ([1, 3].includes(submissions.length)) throw busy;
+      if (submissions.length === 1) throw busy;
+      if (submissions.length === 3) throw new RegimexRequestError("Disabled", 503, null, "analysis_disabled");
       if (submissions.length === 2) throw new RegimexRequestError("Gateway timed out", 504);
       return info("queued", acceptedId);
     },
@@ -254,6 +279,29 @@ test("definitive status failures clear the selected result and cancel its downlo
     assert.equal(p.controller.getSnapshot().status.analysis.analysis_id, firstId);
     p.controller.stop();
   });
+});
+
+test("losing export access invalidates a previous status request still in flight", async () => {
+  const delayed = deferred();
+  let first = true;
+  const p = panel({
+    status: async () => {
+      if (!first) return delayed.promise;
+      first = false;
+      return status(info("succeeded"));
+    },
+    download: async () => { throw new RegimexRequestError("Unavailable", 404); },
+  });
+  p.controller.start();
+  await settled();
+  const refresh = p.controller.refresh();
+  await p.controller.download("export");
+  delayed.resolve(status(info("succeeded")));
+  await refresh;
+  assert.equal(p.controller.getSnapshot().exportAvailable, false);
+  assert.equal(p.controller.getSnapshot().status, null);
+  assert.equal(p.controller.getSnapshot().preview, null);
+  p.controller.stop();
 });
 
 test("a replay that loses access releases the confirmation state for an access check", async () => {
@@ -514,31 +562,34 @@ test("preview errors are independent of reports and retry only on explicit previ
   p.controller.stop();
 });
 
-test("changing the analysis aborts old preview work and ignores late success or failure", async (t) => {
+test("opening another analysis fences the previous link's preview", async (t) => {
   for (const failure of [false, true]) await t.test(failure ? "late failure" : "late success", async () => {
     const delayed = deferred();
-    let latest = firstId, oldSignal;
-    const p = panel({
-      status: async () => status(info("succeeded", latest)),
+    let oldSignal;
+    const client = {
+      status: async (_signal, id) => status(info("succeeded", id)),
       preview: async (id, signal) => {
         if (id === firstId) { oldSignal = signal; return delayed.promise; }
         return preview(id);
       },
-    });
-    p.controller.start();
+    };
+    const oldPanel = panel(client, firstId);
+    oldPanel.controller.start();
     await settled();
-    assert.equal(p.controller.getSnapshot().previewLoading, true);
-    latest = secondId;
-    await p.controller.refresh();
+    assert.equal(oldPanel.controller.getSnapshot().previewLoading, true);
+    oldPanel.controller.stop();
+    const current = panel(client, secondId);
+    current.controller.start();
     await settled();
     assert.equal(oldSignal.aborted, true);
     if (failure) delayed.reject(new RegimexRequestError("Old failure", 503));
     else delayed.resolve(preview(firstId));
     await settled();
-    assert.equal(p.controller.getSnapshot().preview.analysisId, secondId);
-    assert.equal(p.controller.getSnapshot().previewError, null);
-    assert.equal(p.controller.getSnapshot().previewLoading, false);
-    p.controller.stop();
+    assert.equal(oldPanel.controller.getSnapshot().preview, null);
+    assert.equal(oldPanel.controller.getSnapshot().previewError, null);
+    assert.equal(current.controller.getSnapshot().preview.analysisId, secondId);
+    assert.equal(current.controller.getSnapshot().previewLoading, false);
+    current.controller.stop();
   });
 });
 

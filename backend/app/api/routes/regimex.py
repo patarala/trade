@@ -40,14 +40,17 @@ _ASSERTIONS = {
 
 
 async def gateway_error(_request: Request, error: GatewayError) -> JSONResponse:
+    return _error_response(error)
+
+
+def _error_response(error: GatewayError, *, export_available: bool = False) -> JSONResponse:
     headers = dict(_HEADERS)
     if error.retry_after is not None:
         headers["Retry-After"] = str(error.retry_after)
-    return JSONResponse(
-        {"detail": error.message, "code": error.code, "retryable": error.retryable},
-        error.status,
-        headers=headers,
-    )
+    detail = {"detail": error.message, "code": error.code, "retryable": error.retryable}
+    if export_available:
+        detail["export_available"] = True
+    return JSONResponse(detail, error.status, headers=headers)
 
 
 @dataclass(frozen=True)
@@ -166,7 +169,13 @@ def overview(db: DbSession, owned: Owned, analysis_id: UUID | None = None) -> JS
             {"enabled": True, "eligible": False, "reason": error.message, "analysis": None},
             headers=_HEADERS,
         )
-    value = gateway.latest() if analysis_id is None else gateway.bound(str(analysis_id))
+    try:
+        value = gateway.latest() if analysis_id is None else gateway.bound(str(analysis_id))
+    except GatewayError as error:
+        if error.status < 500 and error.status != 429:
+            raise
+        # Ownership and local export eligibility have already been checked.
+        return _error_response(error, export_available=True)
     return JSONResponse(
         {
             "enabled": True,

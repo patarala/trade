@@ -289,6 +289,23 @@ class RegimexGatewayTests(unittest.TestCase):
             self.assertIn(b"attachment", headers[b"content-disposition"])
         self.assertEqual(self.peer.calls, [])
 
+    def test_offline_overview_offers_an_export_only_after_local_run_checks(self):
+        self.peer.failure = GatewayError("analysis_unavailable", "Offline.", 503, retryable=True)
+        status, _, content = self.request()
+        self.assertEqual(status, 503)
+        self.assertIs(json.loads(content)["export_available"], True)
+        status, _, content = self.request(suffix="/export")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(content), self.export)
+        for options in ({"run_id": 999}, {"token": self.other_token}, {"token": "expired"}):
+            status, _, content = self.request(**options)
+            self.assertIn(status, (401, 404))
+            self.assertNotIn("export_available", json.loads(content))
+        self.peer.failure = GatewayError("not_found", "Analysis no longer exists.", 404)
+        status, _, content = self.request(query=f"&analysis_id={uuid4()}")
+        self.assertEqual(status, 404)
+        self.assertNotIn("export_available", json.loads(content))
+
     def test_submit_duplicate_reload_and_report_keep_one_analysis(self):
         status, _, content = self.request()
         self.assertEqual(status, 200)
@@ -333,6 +350,41 @@ class RegimexGatewayTests(unittest.TestCase):
         self.assertEqual([item["analysis_id"] for item in page["items"]], identifiers[:1])
         self.assertFalse(page["has_more"])
         self.assertEqual(self.request(suffix=f"/analyses/{identifiers[0]}/report")[0], 200)
+
+    def test_saved_analysis_without_display_metadata_remains_bound_to_its_export(self):
+        old = self.peer.create_analysis()
+        identifier = old["analysis_id"]
+        old.update(instrument_ids=[], step_count=None)
+        self.peer.complete(identifier)
+        recent = self.peer.create_analysis()
+        status, _, content = self.request(suffix="/analyses")
+        self.assertEqual(status, 200, content)
+        self.assertEqual([item["analysis_id"] for item in json.loads(content)["items"]],
+                         [recent["analysis_id"], identifier])
+        preview = f"/analyses/{identifier}/preview"
+        status, _, content = self.request(suffix=preview)
+        self.assertEqual(status, 200, content)
+        self.assertEqual(json.loads(content)["input"], self.export)
+
+        for field, value in (("time_grid", {}), ("instruments", []), ("snapshot_sha256", "f" * 64)):
+            with self.subTest(field=field):
+                self.peer.result_override = {field: value}
+                self.assertEqual(self.request(suffix=preview)[0], 502)
+        self.peer.result_override = {}
+        old["snapshot_sha256"] = "0" * 64
+        self.assertEqual(self.request(suffix="/analyses")[0], 502)
+        self.assertEqual(self.request(suffix=preview)[0], 502)
+
+    def test_missing_or_partial_display_metadata_is_invalid(self):
+        item = self.peer.create_analysis()
+        for metadata in ({"instrument_ids": []}, {"step_count": None},
+                         {"instrument_ids": [], "step_count": 1},
+                         {"instrument_ids": item["instrument_ids"], "step_count": None}):
+            with self.subTest(metadata=metadata):
+                item.pop("instrument_ids", None)
+                item.pop("step_count", None)
+                item.update(metadata)
+                self.assertEqual(self.request(suffix="/analyses")[0], 502)
 
     def test_intake_response_must_bind_the_exact_snapshot_to_the_accepted_job(self):
         for field, wrong in (

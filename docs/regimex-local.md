@@ -56,7 +56,9 @@ model files, reports and credentials stay in `var/stack`. Treat this directory
 as private. Child process logs are in `var/stack/logs`.
 
 To resume, start the runner with the same checkout, model, digest, PostgreSQL
-binary directory and ports. To use different inputs, choose a new state
+binary directory and ports. If the first startup stopped after registering
+the bundle, the next startup finishes its activation. An already active
+model stays selected. To use different inputs, choose a new state
 directory with `--root`. When using a custom root, look there for `login.json`
 and logs.
 

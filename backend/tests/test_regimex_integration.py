@@ -28,6 +28,53 @@ ENABLED = bool(
     "Set TRADE_REGIMEX_TEST_DSN and TRADE_REGIMEX_TEST_MODEL for the real integration test.",
 )
 class RegimexIntegrationTests(unittest.TestCase):
+    def test_local_bootstrap_resumes_after_registration_before_activation(self):
+        from pydantic import SecretStr
+        from regimex.application.service import AnalysisService
+        from regimex.service_bootstrap import create_service
+        from regimex.service_settings import ServiceSettings
+
+        from backend.scripts.regimex_stack.provision import regimex as provision
+
+        dsn = os.environ["TRADE_REGIMEX_TEST_DSN"]
+        model = Path(os.environ["TRADE_REGIMEX_TEST_MODEL"])
+        schema = "trade_bootstrap_" + uuid4().hex
+        self.addCleanup(self.drop_schema, dsn, schema)
+        with private_workspace() as root:
+            settings = ServiceSettings(
+                database_dsn=SecretStr(dsn), database_schema=schema,
+                object_root=root / "objects", work_root=root / "work",
+            )
+            manifest = (model / "manifest.json").read_bytes()
+            state = {
+                "source_id": "trade-test", "model_bundle": str(model),
+                "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+            }
+            model_id = json.loads(manifest)["model_version_id"]
+            repository = create_service(settings).repository
+            with patch.object(ServiceSettings, "from_env", return_value=settings):
+                with (
+                    patch.object(AnalysisService, "activate_model", side_effect=InterruptedError),
+                    self.assertRaises(InterruptedError),
+                ):
+                    provision(root, state, {})
+                self.assertEqual(repository.get_model(model_id).model_version_id, model_id)
+                self.assertIsNone(repository.get_active_model())
+                provision(root, state, {})
+                self.assertEqual(repository.get_active_model().model_version_id, model_id)
+                with patch.object(AnalysisService, "activate_model", side_effect=AssertionError):
+                    provision(root, state, {})
+
+    @staticmethod
+    def drop_schema(dsn, schema):
+        import psycopg
+        from psycopg import sql
+
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
+
     def test_real_run_saved_model_report_restart_and_access_boundaries(self):
         import psycopg
         from psycopg import sql
@@ -64,16 +111,8 @@ class RegimexIntegrationTests(unittest.TestCase):
             with psycopg.connect(dsn, autocommit=True) as connection:
                 connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(trade_schema)))
 
-            def drop_schemas():
-                with psycopg.connect(dsn, autocommit=True) as connection:
-                    for schema in (trade_schema, regimex_schema):
-                        connection.execute(
-                            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
-                                sql.Identifier(schema),
-                            )
-                        )
-
-            stack.callback(drop_schemas)
+            stack.callback(self.drop_schema, dsn, trade_schema)
+            stack.callback(self.drop_schema, dsn, regimex_schema)
             parameters = conninfo_to_dict(dsn)
             parameters["options"] = f"-csearch_path={trade_schema} -cstatement_timeout=15000"
             engine = create_engine("postgresql+psycopg://", connect_args=parameters)

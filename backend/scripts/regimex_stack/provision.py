@@ -82,7 +82,6 @@ def database(root, state, credentials):
 def regimex(root, state, _credentials):
     from regimex.model_registry import InferenceRuntime
     from regimex.service_bootstrap import create_service
-    from regimex.service_contracts import NotFound
     from regimex.service_settings import ServiceSettings
 
     service = create_service(ServiceSettings.from_env())
@@ -96,21 +95,16 @@ def regimex(root, state, _credentials):
             service.repository.revoke_token(principal.token_id)
             raise
     admin = service.authenticate(read_private(admin_path).strip())
-    manifest = json.loads((Path(state["model_bundle"]) / "manifest.json").read_text())
-    try:
-        existing = service.repository.get_model(manifest["model_version_id"])
-    except NotFound:
-        existing = None
-    # Registration verifies every bundle member and restores its saved predictor.
-    # Its native existing-version path reuses the immutable model on restart.
+    # A previous startup may have registered the bundle before activation finished.
+    # The empty-slot check at publication protects a concurrently chosen model.
     service.register_bundle(
         admin,
         Path(state["model_bundle"]),
         manifest_sha256=state["manifest_sha256"],
         inference_runtime=InferenceRuntime(threads=1),
-        activate=existing is None and not (root / "model-ready.json").exists(),
+        activate=service.repository.get_active_model() is None,
+        expected_previous=None,
     )
-    save_json(root / "model-ready.json", {"manifest_sha256": state["manifest_sha256"]})
     integration_path = root / "integration.token"
     if not integration_path.exists():
         principal, token = service.repository.issue_token(

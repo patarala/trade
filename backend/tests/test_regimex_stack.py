@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from backend.scripts.regimex_stack.files import (
     private_directory,
@@ -28,7 +28,7 @@ from backend.scripts.regimex_stack.options import (
     preflight,
 )
 from backend.scripts.regimex_stack.processes import Supervisor
-from backend.scripts.regimex_stack.runner import copy_frontend
+from backend.scripts.regimex_stack.runner import copy_frontend, services
 from backend.scripts.regimex_stack.state import (
     load_or_create,
     process_identity,
@@ -223,6 +223,25 @@ class LocalStackTests(unittest.TestCase):
             supervisor.close()
         self.assertIsNotNone(child.poll())
         self.assertEqual(json.loads(read_private(self.root / "status.json")), {"state": "stopped"})
+
+    def test_failed_connection_check_stops_startup_before_trade_opens(self):
+        args = self.args()
+        private_directory(args.root)
+        state, credentials = load_or_create(args)
+        write_private(args.root / "integration.token", "local-test-key\n")
+        supervisor = Mock(spec=Supervisor)
+        trade_python = args.root / "trade-venv/bin/python"
+
+        def run(name, command, environment, cwd, **kwargs):
+            if command == [trade_python, "-m", "backend.scripts.regimex_doctor"]:
+                self.assertEqual(environment["REGIMEX_TOKEN"], "local-test-key")
+                self.assertEqual(environment["REGIMEX_SOURCE_ID"], state["source_id"])
+                raise RuntimeError("Connection check failed")
+
+        supervisor.run.side_effect = run
+        with self.assertRaisesRegex(RuntimeError, "Connection check failed"):
+            services(supervisor, args, state, credentials, trade_python, "regimex-python")
+        self.assertNotIn("trade-api", [item.args[0] for item in supervisor.start.call_args_list])
 
     def test_cleanup_includes_descendants_after_the_leader_exits(self):
         private_directory(self.root / "logs")

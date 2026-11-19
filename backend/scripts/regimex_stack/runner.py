@@ -195,6 +195,14 @@ def services(supervisor, args, state, credentials, trade_python, regimex_python)
             regimex,
             root,
         )
+    supervisor.ready(args.regimex_port, "/health/ready")
+    supervisor.run(
+        "regimex-connection",
+        [trade_python, "-m", "backend.scripts.regimex_doctor"],
+        trade,
+        root,
+        timeout=45,
+    )
     supervisor.start(
         "trade-api",
         [
@@ -217,11 +225,7 @@ def services(supervisor, args, state, credentials, trade_python, regimex_python)
         trade,
         root,
     )
-    supervisor.ready(args.regimex_port, "/health/ready")
     supervisor.ready(args.trade_port, "/health")
-    # Readiness verifies database/store access; model and worker capabilities have
-    # their own native checks, including each exact queue heartbeat.
-    supervisor.ready(args.regimex_port, "/health/models")
     for queue in ("analysis", "maintenance"):
         supervisor.run(
             "health-" + queue,

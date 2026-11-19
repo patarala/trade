@@ -149,24 +149,24 @@ def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> 
 def overview(db: DbSession, owned: Owned, analysis_id: UUID | None = None) -> JSONResponse:
     run_id = owned.run.id
     connection = settings.regimex_connection()
-    reason = _reason(owned.run)
-    if connection is None or reason is not None:
+    try:
+        if connection is None:
+            _export(db, owned)
+            return JSONResponse(
+                {"enabled": False, "eligible": True, "reason": None, "analysis": None},
+                headers=_HEADERS,
+            )
+        gateway = _gateway(db, owned, metadata_only=True)
+    except GatewayError as error:
+        if error.code not in ("run_ineligible", "export_unavailable"):
+            raise
         return JSONResponse(
             {
                 "enabled": connection is not None,
-                "eligible": reason is None,
-                "reason": reason,
+                "eligible": False,
+                "reason": error.message,
                 "analysis": None,
             },
-            headers=_HEADERS,
-        )
-    try:
-        gateway = _gateway(db, owned, metadata_only=True)
-    except GatewayError as error:
-        if error.code != "export_unavailable":
-            raise
-        return JSONResponse(
-            {"enabled": True, "eligible": False, "reason": error.message, "analysis": None},
             headers=_HEADERS,
         )
     try:

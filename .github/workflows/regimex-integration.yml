@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: patarala/regimex
-          ref: 257f5b6f1b0f39aa3eea0fdbb39749fcde029abc
+          ref: ad52c53a4f3de2f6b730fd0b6974487e2d59a66a
           path: var/ci-regimex
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

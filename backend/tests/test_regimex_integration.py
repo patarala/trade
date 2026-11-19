@@ -97,6 +97,7 @@ class RegimexIntegrationTests(unittest.TestCase):
         from backend.app.db.base import Base
         from backend.app.db.dependencies import get_db
         from backend.app.integrations.regimex.bindings import VerifiedExports
+        from backend.app.integrations.regimex.diagnostics import diagnose
         from backend.app.main import app
         from backend.app.models import Asset, Instrument, ParticipantBalance, User
         from backend.app.services.simulation_execution import process_next_run
@@ -179,6 +180,8 @@ class RegimexIntegrationTests(unittest.TestCase):
                     password_pepper=SecretStr("integration-only-password-pepper"),
                 )
             )
+            report = diagnose(settings)
+            self.assertEqual(report.status, "passed", report.checks)
             with factory.begin() as db:
                 usd, btc, eth = (
                     Asset(symbol="USD", name="US dollar"),

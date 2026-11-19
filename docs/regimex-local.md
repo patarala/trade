@@ -11,8 +11,10 @@ and the uv version pinned in the Regimex checkout's `pyproject.toml` (0.13.0).
 uv uses the Python version in that checkout's `.python-version`. Allow access
 to the package registries on the first run to install the locked dependencies.
 
-You need a trusted Regimex checkout, a saved model bundle and the expected
-SHA-256 digest of the bundle's `manifest.json`.
+You need a trusted Regimex checkout that advertises `regimex-analysis/1`,
+a saved model bundle and the expected SHA-256 digest of its `manifest.json`.
+The [integration workflow](../.github/workflows/regimex-integration.yml) pins the
+revision used in the paired test.
 
 ## Start
 
@@ -29,6 +31,9 @@ python3 -m backend.scripts.run_regimex \
 If `postgres` and `initdb` are outside your `PATH`, add
 `--postgres-bin /path/to/postgresql/bin`. To check inputs, the manifest
 digest and port availability before installing dependencies, add `--check`.
+At startup, Trade checks its connection key, source, permissions, protocol
+and active model. If this fails, see `logs/regimex-connection.log` under the
+stack root for the individual checks.
 
 | Service | Default port | Override |
 | --- | --- | --- |

@@ -289,6 +289,33 @@ class RegimexGatewayTests(unittest.TestCase):
             self.assertIn(b"attachment", headers[b"content-disposition"])
         self.assertEqual(self.peer.calls, [])
 
+    def test_disabled_overview_and_download_agree_for_unsupported_runs(self):
+        run = self.fixture.fixture.run
+        original = run.configuration_snapshot
+        unfrozen = copy.deepcopy(original)
+        del unfrozen["instrument_configs"][0]["instrument"]
+        with (
+            patch.object(routes.settings, "regimex_url", None),
+            patch.object(routes.settings, "regimex_token", None),
+        ):
+            for engine, snapshot in (("1", original), ("3", unfrozen)):
+                with self.subTest(engine=engine):
+                    run.engine_version = engine
+                    run.configuration_snapshot = snapshot
+                    self.fixture.db.commit()
+                    status, _, overview = self.request()
+                    self.assertEqual(status, 200)
+                    status, _, error = self.request(suffix="/export")
+                    self.assertEqual(status, 422)
+                    self.assertEqual(
+                        json.loads(overview),
+                        {
+                            "enabled": False, "eligible": False,
+                            "reason": json.loads(error)["detail"], "analysis": None,
+                        },
+                    )
+        self.assertEqual(self.peer.calls, [])
+
     def test_offline_overview_offers_an_export_only_after_local_run_checks(self):
         self.peer.failure = GatewayError("analysis_unavailable", "Offline.", 503, retryable=True)
         status, _, content = self.request()

@@ -38,7 +38,9 @@ every step. The inactive-step share uses steps with known counts as its denomina
 | **Наблюдения CSV** | Observations for the selected instrument within the displayed range |
 
 **Скачать данные** also works when Regimex is unavailable. When the connection
-is disabled, the monitor shows the download in **Данные запуска**.
+is disabled, the monitor shows **Данные запуска** for runs whose observations
+Trade can export. This requires a supported engine version and the instrument
+metadata saved with the run.
 
 The CSV files include the analysis, snapshot, model and instrument identifiers.
 A zero-based interval `[0, 10)` covers display steps 1 through 10. Empty numeric

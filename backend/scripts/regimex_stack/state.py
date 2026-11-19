@@ -25,6 +25,15 @@ def load_or_create(args):
         "postgres_bin": str(args.postgres_bin),
     }
     state_path = root / "stack.json"
+    credentials_path = root / "credentials.json"
+    login_path = root / "login.json"
+    if (root / "postgres").exists() and not all(
+        file.is_file() for file in (state_path, credentials_path, login_path)
+    ):
+        raise ValueError("This database is missing its stack identity or credentials.")
+
+    # The runner holds the stack lock. Publish the inputs first so an interrupted
+    # start can resume with the same source and credentials before PostgreSQL starts.
     if state_path.exists():
         state = json.loads(read_private(state_path))
         if any(state.get(key) != value for key, value in requested.items()):
@@ -32,13 +41,13 @@ def load_or_create(args):
                 "This stack belongs to different inputs or ports. "
                 "Use its original options or a new --root."
             )
-        credentials = json.loads(read_private(root / "credentials.json"))
-        read_private(root / "login.json")
     else:
-        # Refuse partial state rather than silently generating replacement keys.
-        if (root / "credentials.json").exists() or (root / "postgres").exists():
-            raise ValueError("Incomplete bootstrap state exists; inspect it before retrying.")
         state = {**requested, "source_id": "trade-local-" + uuid4().hex}
+        save_json(state_path, state)
+
+    if credentials_path.exists():
+        credentials = json.loads(read_private(credentials_path))
+    else:
         credentials = {
             key: secrets.token_urlsafe(48)
             for key in (
@@ -49,12 +58,12 @@ def load_or_create(args):
                 "pepper",
             )
         }
-        save_json(root / "credentials.json", credentials)
-        save_json(
-            root / "login.json",
-            {"email": "local@example.com", "password": secrets.token_urlsafe(24)},
-        )
-        save_json(state_path, state)
+        save_json(credentials_path, credentials)
+
+    if login_path.exists():
+        read_private(login_path)
+    else:
+        save_json(login_path, {"email": "local@example.com", "password": secrets.token_urlsafe(24)})
     write_private(root / "database-admin.password", credentials["database_admin"] + "\n")
     write_private(root / "regimex.dsn", database_url(state, credentials, "regimex") + "\n")
     return state, credentials

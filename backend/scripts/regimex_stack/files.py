@@ -41,6 +41,11 @@ def write_private(path: Path, value: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 

@@ -105,6 +105,44 @@ class LocalStackTests(unittest.TestCase):
             load_or_create(args)
         self.assertEqual(json.loads(read_private(args.root / "credentials.json")), credentials)
 
+    def test_bootstrap_resumes_after_each_published_file(self):
+        args = self.args()
+        for filename in ("stack.json", "credentials.json", "login.json"):
+            with self.subTest(filename=filename):
+                args.root = self.root / filename.removesuffix(".json")
+                private_directory(args.root)
+
+                def interrupt(path, value, stop_after=filename):
+                    save_json(path, value)
+                    if path.name == stop_after:
+                        raise InterruptedError
+
+                with (
+                    patch("backend.scripts.regimex_stack.state.save_json", side_effect=interrupt),
+                    self.assertRaises(InterruptedError),
+                ):
+                    load_or_create(args)
+                saved = {file: read_private(file) for file in args.root.glob("*.json")}
+                load_or_create(args)
+                for path, original in saved.items():
+                    self.assertEqual(read_private(path), original)
+                self.assertTrue((args.root / "login.json").is_file())
+                self.assertTrue((args.root / "regimex.dsn").is_file())
+
+    def test_recovers_partial_credentials_only_before_postgres_exists(self):
+        args = self.args()
+        private_directory(args.root)
+        _state, credentials = load_or_create(args)
+        login = read_private(args.root / "login.json")
+        (args.root / "stack.json").unlink()
+        self.assertEqual(load_or_create(args)[1], credentials)
+        self.assertEqual(read_private(args.root / "login.json"), login)
+        private_directory(args.root / "postgres")
+        (args.root / "credentials.json").unlink()
+        with self.assertRaisesRegex(ValueError, "missing its stack identity or credentials"):
+            load_or_create(args)
+        self.assertFalse((args.root / "credentials.json").exists())
+
     def test_manifest_mismatch_fails_before_dependency_installation(self):
         args = self.args()
         args.manifest_sha256 = "0" * 64

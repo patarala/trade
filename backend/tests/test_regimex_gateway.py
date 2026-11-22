@@ -289,6 +289,52 @@ class RegimexGatewayTests(unittest.TestCase):
             self.assertIn(b"attachment", headers[b"content-disposition"])
         self.assertEqual(self.peer.calls, [])
 
+    def test_offline_overview_preserves_local_export_after_checking_the_run(self):
+        failure = GatewayError("analysis_busy", "Try again later.", 503, retry_after=2)
+        with patch.object(routes.AnalysisGateway, "latest", side_effect=failure) as latest:
+            status, headers, content = self.request()
+            self.assertEqual(status, 503)
+            self.assertEqual(headers[b"retry-after"], b"2")
+            self.assertIs(json.loads(content)["export_available"], True)
+            self.assertEqual(json.loads(self.request(suffix="/export")[2]), self.export)
+            status, _, content = self.request(run_id=99999)
+            self.assertEqual(status, 404)
+            self.assertNotIn("export_available", json.loads(content))
+            latest.assert_called_once()
+
+    def test_disabled_overview_checks_frozen_metadata_without_reading_history(self):
+        run = self.fixture.fixture.run
+        missing_asset = copy.deepcopy(run.configuration_snapshot)
+        del missing_asset["instrument_configs"][0]["instrument"]["base_asset"]
+        with (
+            patch.object(routes.settings, "regimex_url", None),
+            patch.object(routes.settings, "regimex_token", None),
+            patch.object(routes, "build_export", side_effect=AssertionError("read event history")),
+        ):
+            for version, metadata, reason in (
+                ("1", run.configuration_snapshot, "engine version"),
+                ("3", missing_asset, "frozen asset metadata"),
+            ):
+                with self.subTest(version=version):
+                    run.engine_version, run.configuration_snapshot = version, metadata
+                    self.fixture.db.commit()
+                    status, _, content = self.request()
+                    self.assertEqual(status, 200)
+                    self.assertFalse(json.loads(content)["eligible"])
+                    self.assertIn(reason, json.loads(content)["reason"])
+        self.assertEqual(self.peer.calls, [])
+
+    def test_upstream_missing_analysis_keeps_only_the_owned_run_export(self):
+        identifier = str(uuid4())
+        for path in (f"/analyses/{identifier}", f"/analyses/{identifier}/report"):
+            with self.subTest(path=path):
+                status, _, content = self.request(suffix=path)
+                self.assertEqual(status, 404)
+                self.assertIs(json.loads(content)["export_available"], True)
+                status, _, content = self.request(suffix=path, token=self.other_token)
+                self.assertEqual(status, 404)
+                self.assertNotIn("export_available", json.loads(content))
+
     def test_submit_duplicate_reload_and_report_keep_one_analysis(self):
         status, _, content = self.request()
         self.assertEqual(status, 200)

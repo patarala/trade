@@ -68,7 +68,18 @@ def _asset(value: object) -> tuple[int, str]:
     return identity, symbol
 
 
-def _instruments(db: Session, run: SimulationRun) -> dict[int, dict[str, object]]:
+def incomplete_run_reason(run: SimulationRun) -> str | None:
+    if run.status != "completed" or run.current_step != run.total_steps or not run.finished_at:
+        return "Analysis requires a fully completed simulation run."
+    if not 1 <= run.total_steps <= MAX_STEPS:
+        return "Regimex supports completed runs of at most 4096 steps."
+    return None
+
+
+def export_instruments(db: Session, run: SimulationRun) -> dict[int, dict[str, object]]:
+    """Read at most three instrument rows without scanning orders or trades."""
+    if run.engine_version not in ("2", "3"):
+        raise ExportError("This simulation engine version is not supported for export.")
     snapshot = run.configuration_snapshot
     configs = snapshot.get("instrument_configs") if isinstance(snapshot, dict) else None
     if not isinstance(configs, list) or not 1 <= len(configs) <= 2:
@@ -230,13 +241,10 @@ def build_export(db: Session, run: SimulationRun, source_id: str) -> dict[str, o
     """
     if not SOURCE_PATTERN.fullmatch(source_id):
         raise ExportError("A stable Regimex source namespace is required.")
-    if run.status != "completed" or run.current_step != run.total_steps or not run.finished_at:
-        raise ExportError("Analysis requires a fully completed simulation run.")
-    if not 1 <= run.total_steps <= MAX_STEPS:
-        raise ExportError("Regimex supports completed runs of at most 4096 steps.")
-    if run.engine_version not in ("2", "3"):
-        raise ExportError("This simulation engine version is not supported for export.")
-    instruments = _instruments(db, run)
+    reason = incomplete_run_reason(run)
+    if reason:
+        raise ExportError(reason)
+    instruments = export_instruments(db, run)
     _validate_events(db, run, instruments)
     trades, orders = _trade_bins(db, run.id), _order_bins(db, run.id)
     observations = []

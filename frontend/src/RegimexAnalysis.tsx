@@ -38,7 +38,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
     }
   }, [requestedAnalysisId, analysis, simulationId, runId, verifiedInstrumentId]);
 
-  if (!requestedAnalysisId && (view.status?.enabled === false || (!view.status && !view.error))) return null;
+  if (!requestedAnalysisId && !view.exportAvailable && (view.status?.enabled === false || (!view.status && !view.error))) return null;
   const active = pending(analysis);
   const reportUnavailable = analysis?.state === "succeeded" && !analysis.report_available;
   const canSubmit = view.status?.enabled && view.status.eligible && !active && analysis?.state !== "succeeded";
@@ -72,6 +72,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
     {view.status && !view.status.eligible && <p className="panel-note">{view.status.reason ?? "Этот запуск недоступен для анализа."}</p>}
     {analysis?.failure && <p className="form-error" role="alert">{analysis.failure.message}</p>}
     {view.error && <p className="form-error" role="alert">{view.error}</p>}
+    {view.downloadError && <p className="form-error" role="alert">{view.downloadError}</p>}
     {reportUnavailable && <p className="panel-note">Анализ завершён, но отчёт недоступен.</p>}
     {view.pollingPaused && active && !view.error && <p className="panel-note">Автообновление приостановлено. Проверьте состояние вручную.</p>}
 
@@ -85,7 +86,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
       && <RegimexResult key={view.preview.analysisId} preview={view.preview} instrumentId={instrumentId}
         onInstrumentChange={selectInstrument} />}
 
-    {(view.status?.eligible || active || view.error || view.confirmationRequired) && <div className="card-actions regimex-actions">
+    {(view.exportAvailable || active || view.error || view.confirmationRequired) && <div className="card-actions regimex-actions">
       {canSubmit && <button className="primary-button" disabled={busy}
         onClick={() => { void controller.submit(); }} type="button">
         {view.submitting ? "Отправляем…" : view.confirmationRequired ? "Повторить запрос запуска"
@@ -99,7 +100,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
         disabled={busy} onClick={() => { void controller.refresh(); }} type="button">
         {view.loading ? "Проверяем…" : "Проверить состояние"}
       </button>}
-      {view.status?.eligible && <button className="text-button" disabled={view.downloading !== null}
+      {view.exportAvailable && <button className="text-button" disabled={view.downloading !== null}
         onClick={() => { void controller.download("export"); }} type="button">
         {view.downloading === "export" ? "Скачиваем…" : "Скачать данные"}
       </button>}

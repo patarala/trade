@@ -15,7 +15,12 @@ from backend.app.integrations.regimex.bindings import VerifiedExports, binding_k
 from backend.app.integrations.regimex.client import RegimexClient
 from backend.app.integrations.regimex.config import Connection
 from backend.app.integrations.regimex.errors import GatewayError
-from backend.app.integrations.regimex.export import ExportError, build_export
+from backend.app.integrations.regimex.export import (
+    ExportError,
+    build_export,
+    export_instruments,
+    incomplete_run_reason,
+)
 from backend.app.integrations.regimex.json import json_bytes, strict_json
 from backend.app.integrations.regimex.service import AnalysisGateway, public_view
 from backend.app.models import SimulationRun
@@ -39,15 +44,14 @@ _ASSERTIONS = {
 }
 
 
-async def gateway_error(_request: Request, error: GatewayError) -> JSONResponse:
+async def gateway_error(request: Request, error: GatewayError) -> JSONResponse:
     headers = dict(_HEADERS)
     if error.retry_after is not None:
         headers["Retry-After"] = str(error.retry_after)
-    return JSONResponse(
-        {"detail": error.message, "code": error.code, "retryable": error.retryable},
-        error.status,
-        headers=headers,
-    )
+    body = {"detail": error.message, "code": error.code, "retryable": error.retryable}
+    if getattr(request.state, "regimex_export_available", False):
+        body["export_available"] = True
+    return JSONResponse(body, error.status, headers=headers)
 
 
 @dataclass(frozen=True)
@@ -83,16 +87,8 @@ def owned_run(
 Owned = Annotated[OwnedRun, Depends(owned_run)]
 
 
-def _reason(run: SimulationRun) -> str | None:
-    if run.status != "completed" or run.current_step != run.total_steps:
-        return "Analysis requires a completed simulation run."
-    if run.total_steps > 4096:
-        return "Regimex supports runs of at most 4096 steps."
-    return None
-
-
 def _export(db: DbSession, owned: OwnedRun) -> dict:
-    reason = _reason(owned.run)
+    reason = incomplete_run_reason(owned.run)
     if reason:
         raise GatewayError("run_ineligible", reason, 409)
     try:
@@ -113,9 +109,11 @@ def _connection() -> Connection:
     return connection
 
 
-def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> AnalysisGateway:
+def _gateway(
+    db: DbSession, owned: OwnedRun, request: Request, *, metadata_only: bool = False
+) -> AnalysisGateway:
     connection = _connection()
-    reason = _reason(owned.run)
+    reason = incomplete_run_reason(owned.run)
     if reason:
         raise GatewayError("run_ineligible", reason, 409)
     key = (
@@ -136,6 +134,9 @@ def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> 
         (lambda: _verified_exports.remember(key, export))
         if key is not None and not cached else None
     )
+    # An upstream failure can still leave the local export available. Only set
+    # the flag once both run ownership and its local export have been verified.
+    request.state.regimex_export_available = True
     return AnalysisGateway(
         RegimexClient(connection, subject=owned.subject, run_id=export["source"]["run_id"]),
         export, on_verified=remember,
@@ -143,10 +144,15 @@ def _gateway(db: DbSession, owned: OwnedRun, *, metadata_only: bool = False) -> 
 
 
 @router.get("/{simulation_id}/regimex")
-def overview(db: DbSession, owned: Owned) -> JSONResponse:
+def overview(db: DbSession, owned: Owned, request: Request) -> JSONResponse:
     run_id = owned.run.id
     connection = settings.regimex_connection()
-    reason = _reason(owned.run)
+    reason = incomplete_run_reason(owned.run)
+    if connection is None and reason is None:
+        try:
+            export_instruments(db, owned.run)
+        except ExportError as error:
+            reason = str(error)
     if connection is None or reason is not None:
         return JSONResponse(
             {
@@ -158,7 +164,7 @@ def overview(db: DbSession, owned: Owned) -> JSONResponse:
             headers=_HEADERS,
         )
     try:
-        gateway = _gateway(db, owned, metadata_only=True)
+        gateway = _gateway(db, owned, request, metadata_only=True)
     except GatewayError as error:
         if error.code != "export_unavailable":
             raise
@@ -209,11 +215,12 @@ def linked_run(owned: Owned) -> JSONResponse:
 def history(
     db: DbSession,
     owned: Owned,
+    request: Request,
     limit: Annotated[int, Query(ge=1, le=20)] = 10,
     offset: Annotated[int, Query(ge=0, le=10000)] = 0,
 ) -> JSONResponse:
     run_id = owned.run.id
-    page = _gateway(db, owned, metadata_only=True).history(limit=limit, offset=offset)
+    page = _gateway(db, owned, request, metadata_only=True).history(limit=limit, offset=offset)
     return JSONResponse(
         {**page, "items": [public_view(value, run_id) for value in page["items"]]},
         headers=_HEADERS,
@@ -266,31 +273,31 @@ Retry = Annotated[str | None, Depends(retry_request)]
 
 
 @router.post("/{simulation_id}/regimex/analyses", status_code=202)
-def submit(retry_of: Retry, db: DbSession, owned: Owned) -> JSONResponse:
+def submit(retry_of: Retry, db: DbSession, owned: Owned, request: Request) -> JSONResponse:
     # FastAPI resolves dependencies in order: finish the bounded body read before
     # acquiring a database connection or the owned run's shared read lock.
     run_id = owned.run.id
-    result = _gateway(db, owned).submit(retry_of)
+    result = _gateway(db, owned, request).submit(retry_of)
     return JSONResponse(public_view(result, run_id), status_code=202, headers=_HEADERS)
 
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}")
-def status(analysis_id: UUID, db: DbSession, owned: Owned) -> JSONResponse:
+def status(analysis_id: UUID, db: DbSession, owned: Owned, request: Request) -> JSONResponse:
     run_id = owned.run.id
-    value = _gateway(db, owned, metadata_only=True).bound(str(analysis_id))
+    value = _gateway(db, owned, request, metadata_only=True).bound(str(analysis_id))
     return JSONResponse(public_view(value, run_id), headers=_HEADERS)
 
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}/result")
-def result(analysis_id: UUID, db: DbSession, owned: Owned) -> Response:
-    value = _gateway(db, owned).result(str(analysis_id))
+def result(analysis_id: UUID, db: DbSession, owned: Owned, request: Request) -> Response:
+    value = _gateway(db, owned, request).result(str(analysis_id))
     return _attachment(json_bytes(value), "application/json", f"analysis-{analysis_id}.json")
 
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}/preview")
-def preview(analysis_id: UUID, db: DbSession, owned: Owned) -> Response:
+def preview(analysis_id: UUID, db: DbSession, owned: Owned, request: Request) -> Response:
     """Build observations once and pair them with their verified saved result."""
-    gateway = _gateway(db, owned)
+    gateway = _gateway(db, owned, request)
     content = json_bytes({"result": gateway.result(str(analysis_id)), "input": gateway.export})
     if len(content) > _MAX_PREVIEW_BYTES:
         raise GatewayError("preview_too_large", "The analysis preview is too large.", 413)
@@ -298,6 +305,6 @@ def preview(analysis_id: UUID, db: DbSession, owned: Owned) -> Response:
 
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}/report")
-def report(analysis_id: UUID, db: DbSession, owned: Owned) -> Response:
-    content = _gateway(db, owned).report(str(analysis_id))
+def report(analysis_id: UUID, db: DbSession, owned: Owned, request: Request) -> Response:
+    content = _gateway(db, owned, request).report(str(analysis_id))
     return _attachment(content, "text/html", f"analysis-{analysis_id}.html")

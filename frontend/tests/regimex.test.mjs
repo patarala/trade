@@ -152,6 +152,77 @@ test("an unavailable linked analysis fails explicitly without showing the latest
   p.controller.stop();
 });
 
+test("a linked analysis lookup can fail while the verified run remains exportable", async (t) => {
+  for (const failure of [
+    new RegimexRequestError("Offline", 503),
+    new RegimexRequestError("Missing analysis", 404, null, "not_found", true),
+  ]) await t.test(failure.message, async () => {
+    const p = panel({
+      status: async () => status(info("succeeded", secondId)),
+      poll: async () => { throw failure; },
+    }, firstId);
+    p.controller.start();
+    await settled();
+    assert.equal(p.controller.getSnapshot().status, null);
+    assert.equal(p.controller.getSnapshot().exportAvailable, true);
+    await p.controller.download("export");
+    assert.equal(p.downloads.length, 1);
+    assert.equal(p.controller.getSnapshot().error, failure.message);
+    p.controller.stop();
+  });
+});
+
+test("a definitive download failure clears the result and ignores a late refresh", async (t) => {
+  for (const failure of [
+    new RegimexRequestError("Session expired", 401),
+    new RegimexRequestError("Run not found", 404),
+    new RegimexRequestError("Export not supported", 422, null, "export_unavailable"),
+    new RegimexRequestError("Analysis not found", 404, null, "not_found", true),
+  ]) await t.test(failure.message, async () => {
+    const delayed = deferred();
+    let refreshPending = false;
+    const p = panel({
+      status: async () => refreshPending ? delayed.promise : status(info("succeeded")),
+      download: async () => { throw failure; },
+    });
+    p.controller.start();
+    await settled();
+    assert.equal(p.controller.getSnapshot().preview.analysisId, firstId);
+    refreshPending = true;
+    const refresh = p.controller.refresh();
+    await p.controller.download(failure.exportAvailable ? "report" : "export");
+    delayed.resolve(status(info("succeeded")));
+    await refresh;
+    const state = p.controller.getSnapshot();
+    assert.equal(state.status, null);
+    assert.equal(state.preview, null);
+    assert.equal(state.downloading, null);
+    assert.equal(state.exportAvailable, failure.exportAvailable);
+    assert.equal(state.error, failure.message);
+    p.controller.stop();
+  });
+});
+
+test("retrying a local download keeps the upstream error visible", async () => {
+  let failed = false;
+  const p = panel({
+    status: async () => { throw new RegimexRequestError("Regimex is offline", 503, null, null, true); },
+    download: async () => {
+      if (!failed) { failed = true; throw new RegimexRequestError("Download failed", 503); }
+      return new Blob(["local data"]);
+    },
+  });
+  p.controller.start();
+  await settled();
+  await p.controller.download("export");
+  assert.equal(p.controller.getSnapshot().error, "Regimex is offline");
+  assert.equal(p.controller.getSnapshot().downloadError, "Download failed");
+  await p.controller.download("export");
+  assert.equal(p.controller.getSnapshot().error, "Regimex is offline");
+  assert.equal(p.controller.getSnapshot().downloadError, "");
+  p.controller.stop();
+});
+
 test("leaving a saved analysis aborts its outstanding identity check", async () => {
   const delayed = deferred();
   let signal;

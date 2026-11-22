@@ -140,8 +140,9 @@ request and verify every returned snapshot digest against the local export,
 whose identity can be cached for up to 60 seconds. A preview or download also
 uses one request. Regimex returns the analysis, result and requested HTML
 together so Trade can check their identifiers, model, time grid and digest
-before serving them. The local JSON export is available when Regimex is offline
-or disabled.
+before serving them. A completed run can be exported from the simulator monitor
+when Regimex is offline or disabled. If an upstream request fails after Trade
+has verified the local run and its export, the error includes `export_available: true`.
 If completed events are edited directly in the database, restart the API before
 reading their analysis again. The simulator normally treats these runs as immutable.
 

@@ -14,6 +14,30 @@ async function expectNoOverflow(page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
 
+for (const scenario of ["disabled", "offline", "access denied"]) {
+  test(`local export in the run monitor when Regimex is ${scenario}`, async ({ page }) => {
+    const peer = await installPeer(page);
+    const response = scenario === "disabled"
+      ? { json: { enabled: false, eligible: true, analysis: null, reason: null } }
+      : scenario === "offline"
+        ? { status: 503, json: { detail: "Regimex is offline", export_available: true } }
+        : { status: 403, json: { detail: "Access denied" } };
+    await page.route("**/regimex?run_id=7", route => route.fulfill(response));
+    await page.goto("/tests/browser/index.html");
+    if (scenario === "access denied") {
+      await expect(page.getByRole("alert")).toHaveText("Access denied");
+      await expect(page.getByRole("button", { name: "Скачать данные" })).toHaveCount(0);
+    } else {
+      const file = await downloadText(page, "Скачать данные");
+      expect(file.name).toBe("regimex-export.json");
+      expect(JSON.parse(file.bytes.toString("utf8")).observations.length).toBeGreaterThan(0);
+      expect(peer.calls).toEqual(["/api/simulations/3/regimex/export?run_id=7"]);
+      if (scenario === "offline") await expect(page.getByRole("alert")).toHaveText("Regimex is offline");
+    }
+    await expect(page.getByRole("button", { name: "Анализировать" })).toHaveCount(0);
+  });
+}
+
 test("a saved link still exports the run when Regimex is disabled", async ({ page }) => {
   await installPeer(page);
   await page.route("**/regimex?run_id=7", (route) => route.fulfill({

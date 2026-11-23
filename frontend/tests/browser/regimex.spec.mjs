@@ -126,6 +126,23 @@ test("failed preview can retry while report remains available without creating a
   expect(peer.errors).toEqual([]);
 });
 
+test("a report that was not saved keeps the classification and local export available", async ({ page }) => {
+  await installPeer(page);
+  await page.route("**/analyses/*/report?*", (route) => route.fulfill({
+    status: 404, json: { detail: "No HTML report was saved.", code: "report_unavailable" },
+  }));
+  await page.goto(link());
+  const classification = page.getByRole("region", { name: "Классификация модели" });
+  await expect(classification).toBeVisible();
+  await page.getByRole("button", { name: "Скачать отчёт" }).click();
+  await expect(page.getByText("HTML-отчёт для этого анализа не сохранён.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Скачать отчёт" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Проверить состояние" })).toHaveCount(0);
+  await expect(classification).toBeVisible();
+  const exported = await downloadText(page, "Скачать данные");
+  expect(JSON.parse(exported.bytes.toString("utf8")).observations.length).toBeGreaterThan(0);
+});
+
 test("unknown linked instrument is explicit and can be corrected", async ({ page }) => {
   const peer = await installPeer(page);
   await page.goto(link(analysisId, "UNKNOWN/USD"));

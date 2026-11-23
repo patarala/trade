@@ -259,6 +259,9 @@ class AnalysisGateway:
     def result(self, analysis_id: str) -> dict:
         return self._delivery(analysis_id, include_report=False).result
 
+    def result_bytes(self, analysis_id: str) -> bytes:
+        return self._delivery(analysis_id, include_report=False).result_bytes
+
     def _result_grid(self, result: dict) -> None:
         sequences = result.get("sequences")
         instruments = self.export["instruments"]

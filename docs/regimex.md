@@ -58,6 +58,7 @@ points.
 | The connection is disabled or Regimex rejected its credentials | Ask the Trade administrator to check the connection, then retry. |
 | The response to a launch request was lost | Click **Повторить запрос запуска**. Trade repeats the same request so Regimex can return the job it accepted. |
 | Status updates paused | Click **Проверить состояние** to resume polling. |
+| The analysis finished without an HTML report | View its classification in Trade. The result and the run export remain available. |
 | The job finished but its charts did not load | Click **Повторить загрузку** to reload the preview. The saved report can still be downloaded when available. |
 
 ## Enable the connection
@@ -117,7 +118,9 @@ check passed or the integration is disabled. Failures return 1.
 Each Trade API process accepts four simultaneous Regimex requests by default,
 including exports. Set `REGIMEX_MAX_CONCURRENT_REQUESTS` to a value from 1 to 16
 to change that limit. Exhausting it returns `503 analysis_busy` with
-`Retry-After: 2` before the request reaches Regimex. A single analysis view
+`Retry-After: 2` before the request reaches Regimex. If Regimex rejects the
+request at its own active-request limit, Trade returns `503 analysis_busy`
+with the upstream retry delay. A single analysis view
 sends one request at a time. Other tabs and users share the backend limit.
 
 ## Data and access contract
@@ -169,8 +172,13 @@ Trade user's bearer token and a positive `run_id` query parameter.
 | POST | `/regimex/analyses` | Submit `{}` or retry with `{"retry_of":"ANALYSIS_UUID"}` |
 | GET | `/regimex/analyses/{analysis_id}` | Read job state and model version |
 | GET | `/regimex/analyses/{analysis_id}/preview` | Read the result and observations together, up to 16 MiB |
-| GET | `/regimex/analyses/{analysis_id}/result` | Download result JSON |
+| GET | `/regimex/analyses/{analysis_id}/result` | Download the exact bytes of the saved result JSON |
 | GET | `/regimex/analyses/{analysis_id}/report` | Download the HTML report |
+
+The SHA-256 digest of the result download matches the result digest in the
+saved HTML report. The report endpoint returns `409 report_pending` while the analysis is running,
+`404 report_unavailable` if the analysis finished without a saved HTML report,
+and `404 not_found` if the analysis is unknown or inaccessible.
 
 An overview error can include `export_available: true` when Trade has verified
 the local run but Regimex cannot serve its metadata. Clients can offer

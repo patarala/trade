@@ -18,6 +18,7 @@ _ZIP64_LOCATOR_SIZE = 20
 class Delivery:
     analysis: dict
     result: dict
+    result_bytes: bytes
     report: bytes | None
 
 
@@ -65,12 +66,13 @@ def read_delivery(data: bytes, limits: dict[str, int]) -> Delivery:
                 ):
                     raise invalid_response()
             analysis = strict_json(archive.read("analysis.json"))
-            result = strict_json(archive.read("result.json"))
+            result_bytes = archive.read("result.json")
+            result = strict_json(result_bytes)
             if not isinstance(analysis, dict) or not isinstance(result, dict):
                 raise invalid_response()
             report = archive.read("report.html") if "report.html" in limits else None
             if report is not None and not report.decode("utf-8").strip():
                 raise invalid_response()
-            return Delivery(analysis, result, report)
+            return Delivery(analysis, result, result_bytes, report)
     except (BadZipFile, ValueError, EOFError, OSError, RuntimeError):
         raise invalid_response() from None

@@ -112,7 +112,8 @@ class RegimexHTTPTests(unittest.TestCase):
     def test_delivery_uses_one_request_and_applies_separate_member_limits(self):
         analysis = {"name": "a" * 800}
         result = {"observations": "b" * 900}
-        members = [("analysis.json", json.dumps(analysis)), ("result.json", json.dumps(result))]
+        result_bytes = (json.dumps(result, indent=2) + "\n").encode()
+        members = [("analysis.json", json.dumps(analysis)), ("result.json", result_bytes)]
         identifier = str(uuid4())
         self.server.headers = [("Content-Type", "application/zip")]
         for include_report in (False, True):
@@ -125,6 +126,7 @@ class RegimexHTTPTests(unittest.TestCase):
             self.assertEqual(
                 (delivery.analysis, delivery.result, delivery.report), (analysis, result, html)
             )
+            self.assertEqual(delivery.result_bytes, result_bytes)
         path = f"/api/v1/integration/analyses/{identifier}/delivery"
         self.assertEqual([row[1] for row in self.server.received], [path, path + "?include_report=true"])
 
@@ -155,11 +157,11 @@ class RegimexHTTPTests(unittest.TestCase):
             self.client().delivery(identifier, include_report=True)
         self.assertEqual(failure.exception.code, "invalid_analysis_response")
 
-    def test_delivery_distinguishes_missing_analysis_from_pending_artifact(self):
+    def test_delivery_distinguishes_pending_result_missing_report_and_missing_analysis(self):
         for status, code, include_report, expected_code, expected_status in (
             (409, "result_pending", False, "result_pending", 409),
             (409, "result_pending", True, "report_pending", 409),
-            (404, "report_unavailable", True, "report_pending", 409),
+            (404, "report_unavailable", True, "report_unavailable", 404),
             (404, "not_found", True, "not_found", 404),
         ):
             self.server.status = status
@@ -196,6 +198,21 @@ class RegimexHTTPTests(unittest.TestCase):
         self.assertEqual(raised.exception.retry_after, 12)
         self.assertTrue(raised.exception.retryable)
         self.assertNotIn("secret", str(raised.exception))
+
+    def test_submit_distinguishes_busy_admission_from_an_unconfirmed_503(self):
+        self.server.status = 503
+        self.server.headers += [("Retry-After", "1")]
+        for upstream_code, public_code, delay in (
+            ("capacity_limit", "analysis_busy", 1),
+            ("infrastructure_failure", "analysis_unavailable", None),
+        ):
+            self.server.blocks = [json.dumps({"error": {"code": upstream_code}}).encode()]
+            with self.subTest(code=upstream_code), self.assertRaises(GatewayError) as raised:
+                self.client().json("POST", "/api/v1/integration/analysis-intake", payload={})
+            self.assertEqual(
+                (raised.exception.status, raised.exception.code, raised.exception.retry_after),
+                (503, public_code, delay),
+            )
 
     def test_capacity_and_model_failures_expose_only_the_operator_action(self):
         for status, code, action in (

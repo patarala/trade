@@ -259,7 +259,13 @@ export class RegimexController {
       this.saveFile(blob, filename);
     } catch (cause) {
       if (!this.active || lifetime.signal.aborted) return;
-      if (resourceUnavailable(cause)) this.statusFailed(cause);
+      if (kind === "report" && cause instanceof RegimexRequestError
+        && cause.status === 404 && cause.code === "report_unavailable") {
+        const selected = this.state.status;
+        if (selected?.analysis && selected.analysis.analysis_id === analysis?.analysis_id) {
+          this.setStatus({ ...selected, analysis: { ...selected.analysis, report_available: false } });
+        }
+      } else if (resourceUnavailable(cause)) this.statusFailed(cause);
       else this.update({ downloadError: message(cause) });
     } finally {
       if (this.active && !lifetime.signal.aborted) this.update({ downloading: null });

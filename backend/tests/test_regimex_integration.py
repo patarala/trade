@@ -288,6 +288,7 @@ class RegimexIntegrationTests(unittest.TestCase):
                 self.assertEqual(status.json()["state"], "succeeded")
                 result = browser.request("GET", analysis_path + "/result" + query, token=alice)
                 self.assertEqual(result.status, 200, result.body)
+                self.assertEqual(hashlib.sha256(result.body).hexdigest(), completed.result_sha256)
                 parsed_result = AnalysisResult.model_validate_json(result.body)
                 self.assertEqual(parsed_result.snapshot_sha256, export.content_sha256)
                 self.assertEqual(parsed_result.source, export.source)

@@ -75,7 +75,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
     {analysis?.failure && <p className="form-error" role="alert">{analysisMessage(analysis.failure.code, analysis.failure.message)}</p>}
     {view.error && <p className="form-error" role="alert">{view.error}</p>}
     {view.downloadError && <p className="form-error" role="alert">{view.downloadError}</p>}
-    {reportUnavailable && <p className="panel-note">Анализ завершён, но отчёт недоступен.</p>}
+    {reportUnavailable && <p className="panel-note">HTML-отчёт для этого анализа не сохранён.</p>}
     {view.pollingPaused && active && !view.error && <p className="panel-note">Автообновление приостановлено. Проверьте состояние вручную.</p>}
 
     {view.previewLoading && <p className="panel-note" aria-live="polite">Загружаем классификацию…</p>}
@@ -98,7 +98,7 @@ export function RegimexAnalysis({ simulationId, runId, token, requestedAnalysisI
         disabled={view.downloading !== null} onClick={() => { void controller.download("report"); }} type="button">
         {view.downloading === "report" ? "Скачиваем…" : "Скачать отчёт"}
       </button>}
-      {!view.confirmationRequired && (active || reportUnavailable || view.error || view.pollingPaused) && <button className="secondary-button"
+      {!view.confirmationRequired && (active || view.error || view.pollingPaused) && <button className="secondary-button"
         disabled={busy} onClick={() => { void controller.refresh(); }} type="button">
         {view.loading ? "Проверяем…" : "Проверить состояние"}
       </button>}

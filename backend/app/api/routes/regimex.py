@@ -292,8 +292,8 @@ def status(analysis_id: UUID, db: DbSession, owned: Owned) -> JSONResponse:
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}/result")
 def result(analysis_id: UUID, db: DbSession, owned: Owned) -> Response:
-    value = _gateway(db, owned).result(str(analysis_id))
-    return _attachment(json_bytes(value), "application/json", f"analysis-{analysis_id}.json")
+    content = _gateway(db, owned).result_bytes(str(analysis_id))
+    return _attachment(content, "application/json", f"analysis-{analysis_id}.json")
 
 
 @router.get("/{simulation_id}/regimex/analyses/{analysis_id}/preview")

@@ -215,7 +215,8 @@ class AnalysisPeer:
         if include_report and not analysis["report_available"]:
             raise GatewayError("not_found", "Report was not found.", 404)
         report = b"<!doctype html><title>Analysis report</title>" if include_report else None
-        return Delivery(copy.deepcopy(analysis), self.result(identifier), report)
+        result = self.result(identifier)
+        return Delivery(copy.deepcopy(analysis), result, json.dumps(result, indent=2).encode(), report)
 
 
 class RegimexGatewayTests(unittest.TestCase):
@@ -703,6 +704,13 @@ class RegimexGatewayTests(unittest.TestCase):
         )
         self.assertEqual(ordinary[0], 200)
 
+
+    def test_result_download_preserves_the_verified_member_bytes(self):
+        identifier = self.submit()["analysis_id"]
+        self.peer.complete(identifier)
+        status, _, content = self.request(suffix=f"/analyses/{identifier}/result")
+        self.assertEqual(status, 200)
+        self.assertEqual(content, json.dumps(self.peer.result(identifier), indent=2).encode())
 
     def test_preview_builds_one_export_and_preserves_verified_identity(self):
         analysis = self.submit()

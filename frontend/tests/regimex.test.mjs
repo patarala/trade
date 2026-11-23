@@ -281,6 +281,27 @@ test("definitive status failures clear the selected result and cancel its downlo
   });
 });
 
+test("a missing saved report preserves the completed analysis, preview and export", async () => {
+  const p = panel({
+    status: async () => status(info("succeeded")),
+    download: async (kind) => {
+      if (kind === "report") throw new RegimexRequestError("Report was not saved.", 404, null, "report_unavailable");
+      return new Blob(["export"]);
+    },
+  });
+  p.controller.start();
+  await settled();
+  await p.controller.download("report");
+  const view = p.controller.getSnapshot();
+  assert.equal(view.status.analysis.analysis_id, firstId);
+  assert.equal(view.status.analysis.report_available, false);
+  assert.equal(view.preview.analysisId, firstId);
+  assert.equal(view.exportAvailable, true);
+  await p.controller.download("export");
+  assert.equal(p.downloads[0].name, "regimex-export.json");
+  p.controller.stop();
+});
+
 test("losing export access invalidates a previous status request still in flight", async () => {
   const delayed = deferred();
   let first = true;

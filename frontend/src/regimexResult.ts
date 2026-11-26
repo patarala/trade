@@ -193,7 +193,7 @@ function summarize(rows: PreviewObservation[], interval: IntervalBounds): Interv
   const first = prices[0], last = prices.at(-1);
   // One available price gives no basis for measuring change.
   const priceChangePercent = first && last && first.step !== last.step
-    ? 100 * (last.price / first.price - 1) : null;
+    ? (last.price - first.price) / first.price * 100 : null;
   requireValue(priceChangePercent === null || Number.isFinite(priceChangePercent));
   const known = selected.flatMap((row) => row.tradeCount === null ? [] : [row.tradeCount]);
   const inactiveSteps = known.filter((count) => count === 0).length;

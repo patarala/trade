@@ -150,6 +150,18 @@ test("unknown trade counts do not become zero or get inferred from volumes and c
     tradeCount: null, inactiveStepShare: null, inactiveSteps: 0, activityObservedSteps: 0, stepCount: 3 });
 });
 
+test("interval change retains a one-tick move at large prices", () => {
+  const payloads = previewPayloads(2, 1);
+  const prices = [9_000_000_000_000_000, 9_000_000_000_000_001];
+  for (const [index, price] of prices.entries()) {
+    Object.assign(payloads.input.observations[index], {
+      last_price: price, price_state: "observed", trade_count: 1, trade_volume: 1,
+    });
+  }
+  const { stats } = project(payloads).instruments[0].intervals[0];
+  assert.equal(stats.priceChangePercent, 1 / prices[0] * 100);
+});
+
 test("one price gives comparison location but no measured price change; counts stay exact", () => {
   const payloads = previewPayloads(1, 1);
   Object.assign(payloads.input.observations[0], { price_state: "observed", trade_count: 2 ** 31 - 1, trade_volume: 0.25 });

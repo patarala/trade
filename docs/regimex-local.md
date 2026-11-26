@@ -7,7 +7,7 @@ the saved model you supply.
 ## Requirements
 
 Use Linux or WSL as a regular user. Install Node.js 24 with npm, PostgreSQL 16
-and the uv version pinned in the Regimex checkout's `pyproject.toml` (0.13.0).
+and the uv version pinned in the Regimex checkout's `pyproject.toml`.
 uv uses the Python version in that checkout's `.python-version`. Allow access
 to the package registries on the first run to install the locked dependencies.
 

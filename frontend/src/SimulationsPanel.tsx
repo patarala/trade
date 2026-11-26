@@ -4,12 +4,16 @@ import { apiRequest, type Instrument, type Simulation, type SimulationRun } from
 import { SimulationForm } from "./SimulationForm";
 import { SimulationMonitor } from "./SimulationMonitor";
 import { newerRun, runStatusLabel } from "./simulationDisplay";
-import { clearAnalysisLink, currentAnalysisLink, parseAnalysisLink, subscribeAnalysisLink } from "./regimexLink";
+import { currentAnalysisLink, parseAnalysisLink, subscribeAnalysisLink } from "./regimexLink";
 import type { AnalysisLink } from "./regimexLink";
 import { useRequest } from "./useRequest";
 
 
-export function SimulationsPanel({ token, instruments }: { token: string; instruments: Instrument[] }) {
+export function SimulationsPanel({ token, instruments, onOpenExperiments }: {
+  token: string;
+  instruments: Instrument[];
+  onOpenExperiments: () => void;
+}) {
   const hash = useSyncExternalStore(subscribeAnalysisLink, currentAnalysisLink);
   const destination = parseAnalysisLink(hash);
   const [simulations, setSimulations] = useState<Simulation[]>([]);
@@ -87,7 +91,8 @@ export function SimulationsPanel({ token, instruments }: { token: string; instru
   }
 
   function backToExperiments() {
-    clearAnalysisLink();
+    onOpenExperiments();
+    setEditing(null);
     setMonitoring(null);
     refreshList();
   }

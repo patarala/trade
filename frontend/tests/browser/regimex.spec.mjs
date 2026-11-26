@@ -14,6 +14,33 @@ async function expectNoOverflow(page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
 
+test("leaving a restored analysis opens the experiments list", async ({ page }) => {
+  const run = { id: 7, simulation_id: 3, status: "completed", current_step: 12, total_steps: 12,
+    started_at: "2026-01-01T12:00:00Z", instrument_ids: [] };
+  const responses = {
+    "/api/auth/me": { id: 1, email: "trader@example.test", role: "user", is_active: true },
+    "/api/assets": [], "/api/instruments": [], "/api/simulations": [],
+    "/api/simulations/3": { id: 3, name: "Market" },
+    "/api/simulations/3/regimex/run": run,
+    "/api/simulations/3/regimex": { enabled: false, eligible: true, analysis: null, reason: null },
+    "/api/simulations/3/results": { ...run, balances: [], initial_portfolio_value: "100",
+      portfolio_value: "105", profit: "5", return_pct: "5", trade_count: 8, test_trade_count: 2 },
+  };
+  await page.addInitScript(() => localStorage.setItem("exchange-simulator-token", "browser-fixture-token"));
+  await page.route("**/api/**", route => {
+    const response = responses[new URL(route.request().url()).pathname];
+    return response === undefined ? route.fulfill({ status: 404 }) : route.fulfill({ json: response });
+  });
+  await page.goto(`/#/simulations/3/runs/7/analyses/${analysisId}`);
+  const back = page.getByRole("button", { name: "К экспериментам", exact: true });
+  await expect(back).toBeVisible();
+  await page.getByRole("button", { name: "Профиль", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "trader@example.test" })).toBeVisible();
+  await page.goBack();
+  await back.click();
+  await expect(page.getByRole("heading", { name: "Мои эксперименты" })).toBeVisible();
+});
+
 test("a saved link still exports the run when Regimex is disabled", async ({ page }) => {
   await installPeer(page);
   await page.route("**/regimex?*", (route) => route.fulfill({

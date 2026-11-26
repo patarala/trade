@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -148,6 +149,20 @@ class LocalStackTests(unittest.TestCase):
         args.manifest_sha256 = "0" * 64
         with self.assertRaisesRegex(ValueError, "expected digest"):
             preflight(args)
+        self.assertFalse(args.root.exists())
+
+    @unittest.skipUnless(shutil.which("uv"), "requires the local stack's uv executable")
+    def test_check_enforces_the_selected_checkouts_uv_requirement(self):
+        args = self.args()
+        (args.regimex_checkout / "pyproject.toml").write_text(
+            '[project]\nname="regimex"\nversion="1.0"\n[tool.uv]\nrequired-version="==0.0.1"\n'
+        )
+        with (
+            patch("backend.scripts.regimex_stack.options.executable", side_effect=lambda name: name),
+            self.assertRaisesRegex(ValueError, "uv version required by that checkout"),
+        ):
+            preflight(args)
+        self.assertFalse((args.regimex_checkout / ".venv").exists())
         self.assertFalse(args.root.exists())
 
     def test_occupied_and_duplicate_ports_cannot_be_adopted(self):

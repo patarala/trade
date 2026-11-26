@@ -122,6 +122,14 @@ def preflight(args):
     if not re.fullmatch(r"3\.14\.\d+", args.python_version):
         raise ValueError("This runner expects Regimex's pinned Python 3.14 patch version.")
     args.uv, args.npm = executable("uv"), executable("npm")
+    # Reading the project version makes uv enforce this checkout's required-version.
+    try:
+        version([args.uv, "--directory", str(args.regimex_checkout), "--offline", "version", "--short"])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            "uv could not read the Regimex project. Check its pyproject.toml and install "
+            "the uv version required by that checkout."
+        ) from exc
     node = version([executable("node"), "--version"])
     if not re.fullmatch(r"v24\.\d+\.\d+", node):
         raise ValueError("Node.js 24 is required for the locked frontend toolchain.")

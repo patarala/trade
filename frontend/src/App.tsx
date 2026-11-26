@@ -304,7 +304,7 @@ function Dashboard({
         {catalogError && <div className="form-error">{catalogError}</div>}
 
         {section === "experiments" && (
-          <SimulationsPanel instruments={instruments} token={token} />
+          <SimulationsPanel instruments={instruments} token={token} onOpenExperiments={() => openSection("experiments")} />
         )}
         {section === "market" && <MarketCatalog instruments={instruments} />}
         {section === "profile" && <ProfilePanel user={user} />}

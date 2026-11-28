@@ -86,6 +86,13 @@ def _failure(name: str, error: GatewayError) -> Check:
                 "rate_limited",
                 f"Regimex rate-limited the check. Retry in {error.retry_after or 5} seconds.",
             )
+        if status == 503 and error.code == "analysis_busy":
+            return Check(
+                name,
+                "failed",
+                "analysis_busy",
+                f"Regimex reached its request limit. Retry the check after {error.retry_after} s.",
+            )
         if 300 <= status < 400:
             return Check(
                 name,

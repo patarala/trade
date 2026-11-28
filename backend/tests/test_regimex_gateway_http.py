@@ -214,6 +214,22 @@ class RegimexHTTPTests(unittest.TestCase):
                 (503, public_code, delay),
             )
 
+    def test_intake_timeout_is_a_confirmed_refusal_only_for_the_regimex_error(self):
+        self.server.status = 408
+        intake = "/api/v1/integration/analysis-intake"
+        refusal = b'{"error":{"code":"request_timeout"}}'
+        for path, body, expected in (
+            (intake, refusal, (408, "request_timeout")),
+            (intake + f"?retry_of={uuid4()}", refusal, (408, "request_timeout")),
+            (intake, b"gateway timeout", (503, "analysis_unavailable")),
+        ):
+            self.server.blocks = [body]
+            with self.subTest(path=path, body=body):
+                with self.assertRaises(GatewayError) as raised:
+                    self.client().json("POST", path, payload={})
+                self.assertEqual((raised.exception.status, raised.exception.code), expected)
+                self.assertTrue(raised.exception.retryable)
+
     def test_capacity_and_model_failures_expose_only_the_operator_action(self):
         for status, code, action in (
             (429, "storage_quota_exceeded", "free space"),

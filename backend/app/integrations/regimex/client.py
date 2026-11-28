@@ -58,7 +58,7 @@ class _ResolutionFailure(OSError):
 
 def _upstream_error_code(response: http.client.HTTPResponse) -> str | None:
     media_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
-    if response.status not in {404, 409, 429, 503} or media_type != "application/json":
+    if response.status not in {404, 408, 409, 429, 503} or media_type != "application/json":
         return None
     # Recognize machine codes without exposing upstream text or buffering a large body.
     try:
@@ -277,6 +277,7 @@ class _ConfiguredClient:
         status = response.status
         error_code = _upstream_error_code(response)
         delivery = _DELIVERY.fullmatch(path)
+        intake = path.partition("?")[0] == "/api/v1/integration/analysis-intake"
         if delivery and status == 409 and error_code == "result_pending":
             artifact = "report" if delivery[1] == "true" else "result"
             error = GatewayError(
@@ -291,9 +292,7 @@ class _ConfiguredClient:
             error = GatewayError(
                 "report_unavailable", "No HTML report was saved for this analysis.", 404
             )
-        elif status == 404 and error_code is None and (
-            delivery or path.partition("?")[0] == "/api/v1/integration/analysis-intake"
-        ):
+        elif status == 404 and error_code is None and (delivery or intake):
             error = GatewayError(
                 "analysis_endpoint_unavailable",
                 "The Regimex analysis endpoint is unavailable. Check its origin and version.",
@@ -301,6 +300,14 @@ class _ConfiguredClient:
             )
         elif status == 404:
             error = GatewayError("not_found", "The analysis resource was not found.", 404)
+        elif status == 408 and error_code == "request_timeout" and intake:
+            # Regimex rejected the incomplete body before it could create a job.
+            error = GatewayError(
+                "request_timeout",
+                "Regimex did not receive the complete analysis request in time. Retry the request.",
+                408,
+                retryable=True,
+            )
         elif status == 409 and error_code == "model_unavailable":
             error = GatewayError(
                 "model_unavailable",

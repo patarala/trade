@@ -169,6 +169,29 @@ class RegimexDiagnosticTests(unittest.TestCase):
             if status == 401:
                 self.assertIn("indistinguishable", failed.message)
 
+    def test_busy_diagnostic_probes_do_not_report_component_readiness(self):
+        for path, name in (
+            ("/api/v1/connection", "connection"),
+            ("/health/ready", "database"),
+            ("/health/models", "model"),
+        ):
+            with self.subTest(path=path):
+                original = self.server.responses[path]
+                self.server.responses[path] = (
+                    503, {"error": {"code": "capacity_limit"}}, {"Retry-After": "1"},
+                )
+                report = diagnose(self.settings)
+                self.server.responses[path] = original
+                check = next(item for item in report.checks if item.name == name)
+                self.assertEqual((report.status, check.code), ("failed", "analysis_busy"))
+                self.assertIn("1 s", check.message)
+
+        self.server.responses["/health/ready"] = (
+            503, {"status": "unavailable", "database": False}, {},
+        )
+        database = next(item for item in diagnose(self.settings).checks if item.name == "database")
+        self.assertEqual(database.code, "not_ready")
+
     def test_failed_api_probe_never_sends_the_key(self):
         self.server.responses["/health/live"] = (503, {"error": "unavailable"}, {})
         self.assertEqual(diagnose(self.settings).status, "failed")

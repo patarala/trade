@@ -36,6 +36,7 @@ const STATES = new Set<AnalysisState>(["queued", "running", "cancel_requested", 
 const analysisMessages = new Map([
   ["analysis_disabled", "Regimex сейчас отключён."],
   ["analysis_busy", "Сервис анализа занят."],
+  ["request_timeout", "Сервис не успел получить запрос. Повторите запуск анализа."],
   ["analysis_endpoint_unavailable", "Сервис не поддерживает запрос анализа. Обратитесь к администратору Regimex."],
   ["connection_access_denied", "Не удалось подключиться к Regimex. Попросите администратора проверить подключение."],
   ["storage_quota_exceeded", "В Regimex закончилось место. Попросите администратора освободить место или увеличить квоту."],

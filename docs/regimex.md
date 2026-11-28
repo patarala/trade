@@ -53,6 +53,7 @@ points.
 | --- | --- |
 | The analysis failed or was cancelled | Read the reason if shown. **Повторить анализ** requests a new attempt. |
 | Trade reported that analysis requests are busy | Wait for the indicated delay and retry. Your selected attempt stays open. |
+| The request timed out during upload | Retry the launch. The service discarded the incomplete request before creating an analysis. |
 | Regimex storage is full | Ask the administrator to free space or raise the quota for the account or connection. |
 | Regimex has no active model | Ask the Regimex administrator to publish a saved model, then retry the analysis. |
 | The connection is disabled or Regimex rejected its credentials | Ask the Trade administrator to check the connection, then retry. |

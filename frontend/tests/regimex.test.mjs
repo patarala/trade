@@ -106,6 +106,23 @@ test("an explicit refusal keeps the selected analysis available without an uncon
   }
 });
 
+test("an intake timeout allows a fresh retry from the selected analysis", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json(
+    { detail: "The request timed out", code: "request_timeout", retryable: true }, { status: 408 },
+  ));
+  const api = new RegimexApi(3, 7, "jwt");
+  const failed = info("failed");
+  const p = panel({ status: async () => status(failed), submit: api.submit.bind(api) }, failed.analysis_id);
+  p.controller.start();
+  await settled();
+  await p.controller.submit();
+  const view = p.controller.getSnapshot();
+  assert.equal(view.status.analysis.analysis_id, failed.analysis_id);
+  assert.equal(view.confirmationRequired, false);
+  assert.equal(view.error, "Сервис не успел получить запрос. Повторите запуск анализа.");
+  p.controller.stop();
+});
+
 test("reopening completed analysis restores report without submitting another job", async () => {
   let submissions = 0;
   const p = panel({
